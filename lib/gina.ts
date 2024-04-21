@@ -1,6 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import { DataTypes, Sequelize } from 'sequelize';
 import fs from 'fs/promises';
 import moment from 'moment';
@@ -140,7 +137,7 @@ ${downTables}
 };`;
 
 
-    await fs.writeFile('./migrations/' + moment().format('YYYYMMDDHHmmss') + '.ts', migration);
+    await fs.writeFile('./gina/migrations/' + moment().format('YYYYMMDDHHmmss') + '.ts', migration);
 
 
 }
