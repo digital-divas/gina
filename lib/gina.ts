@@ -1,49 +1,15 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { DataTypes, Sequelize, Transaction } from 'sequelize';
-import path from 'path';
+import { DataTypes, Sequelize } from 'sequelize';
 import fs from 'fs/promises';
 import moment from 'moment';
 
-const modelsDir = path.join(__dirname + `/models`);
+function runMigrations() {
+    return;
+}
 
-const POOL_MAX_CONNECTIONS = 50;
-const POOL_IDLE_TIME = 12000;
-const POOL_ACQUIRE_TIME = 30000;
-
-const sequelize = new Sequelize({
-    host: process.env.DB_HOST,
-    database: process.env.DB_NAME,
-    username: process.env.DB_USERNAME,
-    password: process.env.DB_PASSWORD,
-    dialect: 'mysql',
-    isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
-    pool: {
-        max: POOL_MAX_CONNECTIONS,
-        min: 0,
-        idle: POOL_IDLE_TIME,
-        evict: POOL_IDLE_TIME - 2000,
-        acquire: POOL_ACQUIRE_TIME
-    },
-    logging: console.info
-});
-
-async function initializeDb() {
-
-    const files = (await fs.readdir(modelsDir)).filter(file => !file.includes('.d.ts') && !file.includes('.js.map'));
-    const associations: (() => void)[] = [];
-
-    for (const file of files) {
-        const filePath = path.join(modelsDir, file);
-        const model = await import(filePath.replace('.js', ''));
-        associations.push(model.initializeModel(sequelize));
-    }
-
-    for (const association of associations) {
-        association();
-    }
-
+async function createMigration(sequelize: Sequelize) {
     const models = Object.keys(sequelize.models);
     const queryInterface = sequelize.getQueryInterface();
     const tables = await queryInterface.showAllTables();
@@ -174,16 +140,14 @@ ${downTables}
 };`;
 
 
-    await fs.writeFile(__dirname + '/migrations/' + moment().format('YYYYMMDDHHmmss') + '.ts', migration);
-
+    await fs.writeFile('./migrations/' + moment().format('YYYYMMDDHHmmss') + '.ts', migration);
 
 
 }
 
-initializeDb()
-    .then(() => process.exit())
-    .catch((err) => {
-        console.error(err);
-        process.exit(1);
-    });
+const gina = {
+    runMigrations,
+    createMigration,
+};
 
+export default gina;

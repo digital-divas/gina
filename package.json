@@ -1,15 +1,17 @@
 {
-  "name": "gina",
-  "main": "gina.ts",
+  "name": "gina-sequelize",
+  "main": "lib/gina.ts",
+  "version": "0.0.2",
+  "description": "Gina is a tool to auto-generate and run migrations based on Sequelize ORM.",
   "scripts": {
-    "dev": "ts-node gina.ts"
+    "dev": "ts-node main.ts"
   },
   "repository": {
     "type": "git",
     "url": "git@github.com:digital-divas/gina.git"
   },
   "keywords": [],
-  "author": "",
+  "author": "digital-divas",
   "license": "GPL-3.0-only",
   "dependencies": {
     "moment": "^2.30.1",
