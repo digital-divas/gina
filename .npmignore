@@ -1,0 +1,10 @@
+.git
+.gitignore
+.gitmodules
+.github
+/tmp
+/docs
+/lib
+tsconfig.json
+tests/
+*.tgz

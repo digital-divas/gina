@@ -1,0 +1,14 @@
+{
+  "exclude": [
+    "dist/",
+    "tests/",
+    "coverage/"
+  ],
+  "extension": [
+    ".ts"
+  ],
+  "include": [
+    "src/**/!(*.test.*).[tj]s?(x)"
+  ],
+  "all": true
+}

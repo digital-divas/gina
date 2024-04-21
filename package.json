@@ -1,0 +1,41 @@
+{
+  "name": "gina-sequelize",
+  "main": "./dist/gina.js",
+  "types": "./dist/gina.d.ts",
+  "version": "0.0.8",
+  "description": "Gina is a tool to auto-generate and run migrations based on Sequelize ORM.",
+  "scripts": {
+    "eslint": "eslint .",
+    "eslint_fix": "eslint . --fix",
+    "build": "tsc",
+    "dev": "ts-node main.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:digital-divas/gina.git"
+  },
+  "keywords": [],
+  "author": "digital-divas",
+  "license": "GPL-3.0-only",
+  "dependencies": {
+    "moment": "^2.30.1",
+    "mysql2": "^3.6.0",
+    "sequelize": "^6.32.1"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.1",
+    "@types/mocha": "^9.1.1",
+    "@types/node": "^18.0.0",
+    "@typescript-eslint/eslint-plugin": "^5.28.0",
+    "@typescript-eslint/parser": "^5.28.0",
+    "chai": "^4.3.6",
+    "dotenv": "^16.0.1",
+    "eslint": "^8.17.0",
+    "import": "^0.0.6",
+    "mocha": "^10.0.0",
+    "mocha-junit-reporter": "^2.0.2",
+    "nyc": "^15.1.0",
+    "ts-node": "^10.8.1",
+    "typescript": "^4.7.4"
+  }
+}
