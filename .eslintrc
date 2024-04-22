@@ -52,8 +52,8 @@
             "error",
             "single",
             {
-              "allowTemplateLiterals": true
+                "allowTemplateLiterals": true
             }
-          ]
+        ]
     }
 }
