@@ -1,23 +1,20 @@
-#! /usr/bin/env node
-/* eslint-disable @typescript-eslint/no-var-requires */
+#!/usr/bin/env ts-node
 
-const yargs = require('yargs/yargs');
-const { hideBin } = require('yargs/helpers');
-const fs = require('fs/promises');
-const moment = require('moment');
+import yargs from 'yargs/yargs';
+import { hideBin } from 'yargs/helpers';
+import { readdir, mkdir, writeFile } from 'fs/promises';
+import moment from 'moment';
 
 async function createInitialFolder() {
-    const files = await fs.readdir('.');
+    const files = await readdir('.');
     if (files.includes('gina')) {
         console.info('There\'s already a folder/file named gina on your folder indicating that gina is already initialized.');
         return;
     }
 
-
-
-    await fs.mkdir('gina');
-    await fs.mkdir('gina/migrations');
-    await fs.writeFile(`gina/migrations/${moment().format('YYYYMMDDHHmmss') + '-add-version-control-table.ts'}`, `import { QueryInterface, DataTypes } from 'sequelize';
+    await mkdir('gina');
+    await mkdir('gina/migrations');
+    await writeFile(`gina/migrations/${moment().format('YYYYMMDDHHmmss') + '-add-version-control-table.ts'}`, `import { QueryInterface, DataTypes } from 'sequelize';
 
 export const migration = {
     async up(queryInterface: QueryInterface) {
@@ -55,7 +52,7 @@ export const migration = {
 };
 `);
 
-    await fs.writeFile('gina/initializeModels.ts', `import dotenv from 'dotenv';
+    await writeFile('gina/initializeModels.ts', `import dotenv from 'dotenv';
 dotenv.config();
 
 import { Sequelize, Transaction } from 'sequelize';
@@ -107,37 +104,66 @@ async function initializeModels() {
 export { initializeModels };
 `);
 
-    await fs.writeFile('gina/upgrade.ts', `
-import { initializeModels } from './initializeModels';
-import gina from 'gina-sequelize';
+}
 
-(async () => {
+async function generateMigration(migrationName: string) {
     try {
-        const sequelize = await initializeModels();
-        await gina.runMigrations(sequelize);
+        const pathName = process.cwd();
+        const initFile = await import(pathName + '/gina/initializeModels.ts');
+
+        console.log('loading models...');
+        const sequelize = await initFile.initializeModels();
+
+        console.log('loading gina lib...');
+        try {
+            const ginaLib = await import(pathName + '/node_modules/gina-sequelize/dist/gina.js');
+            await ginaLib.default.createMigration(sequelize, migrationName);
+        } catch (err) {
+            const ginaLib = await import(pathName + '/lib/gina.ts');
+            await ginaLib.default.createMigration(sequelize, migrationName);
+        }
+
         process.exit();
     } catch (err) {
         console.error(err);
         process.exit(1);
     }
-})();
-`);
 
-    await fs.writeFile('gina/generate-migration.ts', `
-import { initializeModels } from './initializeModels';
-import gina from 'gina-sequelize';
+}
 
-(async () => {
+async function upgrade() {
     try {
-        const sequelize = await initializeModels();
-        await gina.createMigration(sequelize);
+        const pathName = process.cwd();
+        const initFile = await import(pathName + '/gina/initializeModels.ts');
+
+        console.log('loading models...');
+        const sequelize = await initFile.initializeModels();
+
+        console.log('loading migrations...');
+        const files = (await readdir(pathName + '/gina/migrations')).filter(file => !file.includes('.d.ts') && !file.includes('.js.map'));
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const migrations: { [file: string]: any; } = {};
+
+        for (const file of files) {
+            const filePath = await import(pathName + '/gina/migrations/' + file);
+            migrations[file.replace('.ts', '')] = filePath;
+        }
+
+        console.log('loading gina lib...');
+        try {
+            const ginaLib = await import(pathName + '/node_modules/gina-sequelize/dist/gina.js');
+            await ginaLib.default.runMigrations(sequelize, migrations);
+        } catch (err) {
+            const ginaLib = await import(pathName + '/lib/gina.ts');
+            await ginaLib.default.runMigrations(sequelize, migrations);
+        }
+
         process.exit();
     } catch (err) {
         console.error(err);
         process.exit(1);
     }
-})();
-`);
 
 }
 
@@ -151,9 +177,9 @@ yargs(hideBin(process.argv))
                 describe: 'Name of the migration to be added'
             });
     }, (argv) => {
-        console.info(`start server on :${argv['migration-name']}`);
+        generateMigration(argv['migration-name'] as string);
     })
     .command('upgrade', 'upgrade database to its last revision', () => {
-        console.log('upgrade');
+        upgrade();
     })
     .parse();
