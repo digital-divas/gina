@@ -1,4 +1,4 @@
-import { DataTypes, ModelCtor, Model, Sequelize, ModelAttributeColumnOptions, QueryTypes } from 'sequelize';
+import { DataTypes, ModelCtor, Model, Sequelize, ModelAttributeColumnOptions, QueryTypes, ColumnDescription } from 'sequelize';
 import fs from 'fs/promises';
 import moment from 'moment';
 import { MigrationFile } from './typings/migration';
@@ -212,6 +212,38 @@ class Migration {
         this.downFields = tabsToSpace(`\n\t\tawait queryInterface.removeColumn('${tableName}', '${attribute.field}');\n`) + this.downFields;
     }
 
+    columnAttributeProps(attribute: ColumnDescription) {
+        if (!this.imports.includes('DataTypes')) {
+            this.imports.push('DataTypes');
+        }
+
+        let attrProps = '';
+
+        console.log('attribute.defaultValue', attribute.defaultValue);
+
+        attrProps += tabsToSpace(`\n${tabs(3)}type: DataTypes.${attribute.type.replace('VARCHAR(', 'STRING(')},`);
+        if (attribute.autoIncrement !== null) {
+            attrProps += tabsToSpace(`\n${tabs(3)}autoIncrement: ${this.getAutoIncrement(attribute)},`);
+        }
+        if (attribute.allowNull !== null) {
+            attrProps += tabsToSpace(`\n${tabs(3)}allowNull: ${this.getAllowNull(attribute)},`);
+        }
+        if (attribute.primaryKey !== null) {
+            attrProps += tabsToSpace(`\n${tabs(3)}primaryKey: ${this.getPrimaryKey(attribute)},`);
+        }
+        if (attribute.defaultValue !== null) {
+            attrProps += tabsToSpace(`\n${tabs(3)}defaultValue: ${this.getDefaultValue(attribute)},`);
+        }
+
+        return attrProps;
+    }
+
+    dropColumn(tableName: string, field: string, attribute: ColumnDescription) {
+        console.debug(`drop column ${tableName} ${field} `);
+        this.upFields += tabsToSpace(`\n\t\tawait queryInterface.removeColumn('${tableName}', '${field}');\n`);
+        this.downFields = tabsToSpace(`\n\t\tawait queryInterface.addColumn('${tableName}', '${field}', {${this.columnAttributeProps(attribute)}\n\t\t});`) + this.downFields;
+    }
+
     async checkDiffs() {
         const models = Object.keys(this.sequelize.models);
         const modelTableNames: string[] = [];
@@ -242,23 +274,7 @@ class Migration {
 
             for (const attr of Object.keys(attrs)) {
                 if (!modelFields.includes(attr)) {
-                    console.debug(`drop column ${modelTable} ${attr} `);
-
-                    this.upFields += `;
-                await queryInterface.removeColumn('${modelTable}', '${attr}');
-                `;
-
-                    if (!this.imports.includes('DataTypes')) {
-                        this.imports.push('DataTypes');
-                    }
-
-                    this.downFields = `;
-                await queryInterface.addColumn('${modelTable}', '${attr}', {
-                    type: DataTypes.${attrs[attr].type.replace('VARCHAR(', 'STRING(')},
-                    allowNull: ${this.getAllowNull(attrs[attr])},
-                    defaultValue: ${attrs[attr].defaultValue},
-            });
-            ` + this.downFields;
+                    this.dropColumn(modelTable, attr, attrs[attr]);
                 }
             }
 
