@@ -1,13 +1,13 @@
 import { DataTypes, ModelCtor, Model, Sequelize, ModelAttributeColumnOptions, QueryTypes } from 'sequelize';
 import fs from 'fs/promises';
 import moment from 'moment';
-import path from 'path';
 import { MigrationFile } from './typings/migration';
 
-async function runMigrations(sequelize: Sequelize) {
-    const migrationsDir = './gina/migrations';
-    const files = (await fs.readdir(migrationsDir)).filter(file => !file.includes('.d.ts') && !file.includes('.js.map'));
+interface MigrationFiles {
+    [version: string]: { migration: MigrationFile; };
+}
 
+async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles) {
     const tables = await sequelize.getQueryInterface().showAllTables();
 
     let version = '';
@@ -24,24 +24,20 @@ async function runMigrations(sequelize: Sequelize) {
         version = versions.length == 1 ? versions[0].version : '';
     }
 
-
     console.info('current version:', version);
 
-    for (const file of files) {
-        const escapedFile = file.replace('.js', '').replace('.ts', '');
-        if (escapedFile > version) {
-            const filePath = path.join(migrationsDir, file);
-            const model: { migration: MigrationFile; } = await import(filePath.replace('.js', ''));
-            console.info('applying migration:', escapedFile);
-            await model.migration.up(sequelize.getQueryInterface());
+    for (const migrationFile of Object.keys(migrationFiles)) {
+        if (migrationFile > version) {
+            console.info('applying migration:', migrationFile);
+            await migrationFiles[migrationFile].migration.up(sequelize.getQueryInterface());
             if (version) {
-                version = escapedFile;
+                version = migrationFile;
                 await sequelize.query(`UPDATE gina_version SET version = '${version}', updatedAt = NOW();`);
             } else {
-                version = escapedFile;
+                version = migrationFile;
                 await sequelize.query(`INSERT INTO gina_version (updatedAt, version) VALUES (NOW(),'${version}');`);
             }
-            console.info('applied version:', escapedFile);
+            console.info('applied version:', migrationFile);
         }
     }
 }
@@ -280,7 +276,7 @@ class Migration {
         }
     }
 
-    async generateFile() {
+    async generateFile(migrationName: string) {
         const migration = `import { ${this.imports.join(', ')} } from 'sequelize';
 
 export const migration = {
@@ -295,11 +291,11 @@ ${this.downTables}
     }
 };`;
 
-        await fs.writeFile('./gina/migrations/' + moment().format('YYYYMMDDHHmmss') + '.ts', migration);
+        await fs.writeFile(`./gina/migrations/${moment().format('YYYYMMDDHHmmss')}-${migrationName.toLowerCase().replaceAll(' ', '-')}.ts`, migration);
     }
 }
 
-async function createMigration(sequelize: Sequelize) {
+async function createMigration(sequelize: Sequelize, migrationName: string) {
 
     const migration = new Migration(sequelize);
     await migration.loadDatabaseTables();
@@ -310,7 +306,7 @@ async function createMigration(sequelize: Sequelize) {
         console.info('There\'s no changes between your models and the database.');
         return;
     }
-    await migration.generateFile();
+    await migration.generateFile(migrationName);
 
 }
 

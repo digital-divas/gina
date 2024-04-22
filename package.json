@@ -2,7 +2,7 @@
   "name": "gina-sequelize",
   "main": "./dist/gina.js",
   "bin": {
-    "gina-cli": "./bin/index.js"
+    "gina-cli": "./bin/index.ts"
   },
   "types": "./dist/gina.d.ts",
   "version": "0.0.9",
