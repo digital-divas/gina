@@ -1,9 +1,16 @@
 #!/usr/bin/env ts-node
 
-import yargs from 'yargs/yargs';
-import { hideBin } from 'yargs/helpers';
-import { readdir, mkdir, writeFile } from 'fs/promises';
-import moment from 'moment';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-nocheck
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const yargs = require('yargs/yargs');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { hideBin } = require('yargs/helpers');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { readdir, mkdir, writeFile } = require('fs/promises');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const moment = require('moment');
 
 async function createInitialFolder() {
     const files = await readdir('.');
@@ -106,7 +113,7 @@ export { initializeModels };
 
 }
 
-async function generateMigration(migrationName: string) {
+async function generateMigration(migrationName) {
     try {
         const pathName = process.cwd();
         const initFile = await import(pathName + '/gina/initializeModels.ts');
@@ -143,7 +150,7 @@ async function upgrade() {
         const files = (await readdir(pathName + '/gina/migrations')).filter(file => !file.includes('.d.ts') && !file.includes('.js.map'));
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const migrations: { [file: string]: any; } = {};
+        const migrations = {};
 
         for (const file of files) {
             const filePath = await import(pathName + '/gina/migrations/' + file);
@@ -177,7 +184,7 @@ yargs(hideBin(process.argv))
                 describe: 'Name of the migration to be added'
             });
     }, (argv) => {
-        generateMigration(argv['migration-name'] as string);
+        generateMigration(argv['migration-name']);
     })
     .command('upgrade', 'upgrade database to its last revision', () => {
         upgrade();
