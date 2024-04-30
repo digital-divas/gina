@@ -175,6 +175,25 @@ class Migration {
                 continue;
             }
 
+            if (modelAttrs[modelAttrsKey].references) {
+                const references = modelAttrs[modelAttrsKey].references;
+                if (typeof references !== 'string') {
+                    this.upForeignKey = `
+        await queryInterface.addConstraint('${model.getTableName()}', {
+            type: 'foreign key',
+            fields: ['${modelAttrs[modelAttrsKey].field}'],
+            onDelete: '${modelAttrs[modelAttrsKey].onDelete}',
+            onUpdate: '${modelAttrs[modelAttrsKey].onUpdate}',
+            references: {
+                table: '${references?.model}',
+                field: '${references?.key}'
+            }
+        });
+`;
+                }
+
+            }
+
             this.upTables += tabsToSpace(`\t\t\t${modelAttrsKey}: {${this.attributeProps(modelAttrs[modelAttrsKey], 4)}\n\t\t\t},\n`);
 
         }
@@ -226,8 +245,6 @@ class Migration {
         }
 
         let attrProps = '';
-
-        console.log('attribute.defaultValue', attribute.defaultValue);
 
         let dataTypes = attribute.type;
 
@@ -284,7 +301,6 @@ class Migration {
             for (const modelAttr of Object.keys(modelAttrs)) {
                 modelFields.push(modelAttrs[modelAttr].field || modelAttr);
                 if (!Object.keys(attrs).includes(modelAttrs[modelAttr].field || modelAttr) && !(modelAttrs[modelAttr].type instanceof DataTypes.VIRTUAL)) {
-                    console.log('modelAttrs[modelAttr]', modelAttrs[modelAttr]);
                     this.newColumn(modelTable, modelAttrs[modelAttr]);
 
                     if (modelAttrs[modelAttr].references) {
@@ -339,13 +355,19 @@ class Migration {
                     if (index.name === 'PRIMARY') {
                         continue;
                     }
+                    if (index.name.endsWith('_fk')) {
+                        continue;
+                    }
+                    if (index.name.includes('_ibfk')) {
+                        continue;
+                    }
+
                     if (modelIndexes === undefined || !modelIndexes.find((modelIndex) => index.name == modelIndex.name)) {
                         this.upIndexes = `
         await queryInterface.removeIndex('${modelTable}', '${index.name}');
 
 `;
 
-                        console.log('fields', JSON.stringify(index.fields));
                         this.downFields = `
         await queryInterface.addIndex('${modelTable}', ['${index.fields?.map(field => field.attribute).join('\', \'')}'], {
             name: '${index.name}',
