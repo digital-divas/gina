@@ -66,6 +66,7 @@ class Migration {
     private sequelize: Sequelize;
     tables: string[];
     imports: string[];
+    upForeignKey: string;
 
     constructor(sequelize: Sequelize) {
         this.upTables = '';
@@ -74,6 +75,7 @@ class Migration {
         this.downFields = '';
         this.upIndexes = '';
         this.downIndexes = '';
+        this.upForeignKey = '';
 
         /**
          *
@@ -129,6 +131,9 @@ class Migration {
         if (model.type instanceof DataTypes.TEXT) {
             return 'DataTypes.TEXT';
         }
+        if (model.type instanceof DataTypes.BOOLEAN) {
+            return 'DataTypes.BOOLEAN';
+        }
         return '';
     }
 
@@ -142,6 +147,8 @@ class Migration {
             }
             return `Sequelize.literal('${val}')`;
         } else if (typeof model.defaultValue == 'number') {
+            return String(model.defaultValue);
+        } else if (typeof model.defaultValue == 'boolean') {
             return String(model.defaultValue);
         }
 
@@ -168,7 +175,27 @@ class Migration {
                 continue;
             }
 
+            if (modelAttrs[modelAttrsKey].references) {
+                const references = modelAttrs[modelAttrsKey].references;
+                if (typeof references !== 'string') {
+                    this.upForeignKey = `
+        await queryInterface.addConstraint('${model.getTableName()}', {
+            type: 'foreign key',
+            fields: ['${modelAttrs[modelAttrsKey].field}'],
+            onDelete: '${modelAttrs[modelAttrsKey].onDelete}',
+            onUpdate: '${modelAttrs[modelAttrsKey].onUpdate}',
+            references: {
+                table: '${references?.model}',
+                field: '${references?.key}'
+            }
+        });
+`;
+                }
+
+            }
+
             this.upTables += tabsToSpace(`\t\t\t${modelAttrsKey}: {${this.attributeProps(modelAttrs[modelAttrsKey], 4)}\n\t\t\t},\n`);
+
         }
 
         this.upTables += tabsToSpace(`\t\t});`);
@@ -219,9 +246,15 @@ class Migration {
 
         let attrProps = '';
 
-        console.log('attribute.defaultValue', attribute.defaultValue);
+        let dataTypes = attribute.type;
 
-        attrProps += tabsToSpace(`\n${tabs(3)}type: DataTypes.${attribute.type.replace('VARCHAR(', 'STRING(')},`);
+        if (dataTypes.includes('VARCHAR(')) {
+            dataTypes = dataTypes.replace('VARCHAR(', 'STRING(');
+        } else if (dataTypes == 'INT') {
+            dataTypes = 'INTEGER';
+        }
+
+        attrProps += tabsToSpace(`\n${tabs(3)}type: DataTypes.${dataTypes},`);
         if (attribute.autoIncrement !== null) {
             attrProps += tabsToSpace(`\n${tabs(3)}autoIncrement: ${this.getAutoIncrement(attribute)},`);
         }
@@ -269,6 +302,25 @@ class Migration {
                 modelFields.push(modelAttrs[modelAttr].field || modelAttr);
                 if (!Object.keys(attrs).includes(modelAttrs[modelAttr].field || modelAttr) && !(modelAttrs[modelAttr].type instanceof DataTypes.VIRTUAL)) {
                     this.newColumn(modelTable, modelAttrs[modelAttr]);
+
+                    if (modelAttrs[modelAttr].references) {
+                        const references = modelAttrs[modelAttr].references;
+                        if (typeof references !== 'string') {
+                            this.upForeignKey = `
+        await queryInterface.addConstraint('${modelTable}', {
+            type: 'foreign key',
+            fields: ['${modelAttrs[modelAttr].field}'],
+            onDelete: '${modelAttrs[modelAttr].onDelete}',
+            onUpdate: '${modelAttrs[modelAttr].onUpdate}',
+            references: {
+                table: '${references?.model}',
+                field: '${references?.key}'
+            }
+        });
+`;
+                        }
+
+                    }
                 }
             }
 
@@ -278,10 +330,53 @@ class Migration {
                 }
             }
 
-            // TODO: add index and constraints
-            // sequelize.models[model].
-            // console.debug('sequelize.models.GinaVersion.options.indexes', sequelize.models.GinaVersion.options.indexes);
-            // console.log(sequelize.models[model]);
+
+            const indexes: { name: string; fields: { attribute: string; }[]; unique: boolean; }[] = await queryInterface.showIndex(modelTable) as { name: string; fields: { attribute: string; }[]; unique: boolean; }[];
+            const modelIndexes = this.sequelize.models[model].options.indexes;
+
+            if (modelIndexes) {
+                for (const modelIndex of modelIndexes) {
+                    if (!indexes.find((index) => index.name == modelIndex.name)) {
+                        this.upIndexes = `
+        await queryInterface.addIndex('${modelTable}', ['${modelIndex.fields?.join('\', \'')}'], {
+            name: '${modelIndex.name}',
+            unique: ${modelIndex.unique},
+        });
+`;
+                        this.downFields = `
+        await queryInterface.removeIndex('${modelTable}', '${modelIndex.name}');
+`;
+                    }
+                }
+            }
+
+            if (indexes) {
+                for (const index of indexes) {
+                    if (index.name === 'PRIMARY') {
+                        continue;
+                    }
+                    if (index.name.endsWith('_fk')) {
+                        continue;
+                    }
+                    if (index.name.includes('_ibfk')) {
+                        continue;
+                    }
+
+                    if (modelIndexes === undefined || !modelIndexes.find((modelIndex) => index.name == modelIndex.name)) {
+                        this.upIndexes = `
+        await queryInterface.removeIndex('${modelTable}', '${index.name}');
+
+`;
+
+                        this.downFields = `
+        await queryInterface.addIndex('${modelTable}', ['${index.fields?.map(field => field.attribute).join('\', \'')}'], {
+            name: '${index.name}',
+            unique: ${index.unique},
+        });
+`;
+                    }
+                }
+            }
 
         }
 
@@ -299,9 +394,12 @@ export const migration = {
     async up(queryInterface: QueryInterface) {
 ${this.upTables}
 ${this.upFields}
+${this.upForeignKey}
+${this.upIndexes}
     },
 
     async down(queryInterface: QueryInterface) {
+${this.downIndexes}
 ${this.downFields}
 ${this.downTables}
     }
@@ -318,9 +416,8 @@ async function createMigration(sequelize: Sequelize, migrationName: string) {
 
     await migration.checkDiffs();
 
-    if (!migration.upTables && !migration.upFields && !migration.upIndexes) {
+    if (!migration.upTables && !migration.upFields && !migration.upIndexes && !migration.upForeignKey) {
         console.info('There\'s no changes between your models and the database.');
-        return;
     }
     await migration.generateFile(migrationName);
 
