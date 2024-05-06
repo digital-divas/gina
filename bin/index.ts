@@ -113,17 +113,31 @@ export { initializeModels };
 
 }
 
+async function loadGinaLib(pathName) {
+    try {
+        const ginaLib = await import(pathName + '/node_modules/gina-sequelize/dist/gina.js');
+        return ginaLib.default.default;
+    } catch {
+        const ginaLib = await import(pathName + '/lib/gina.ts');
+        return ginaLib.default;
+    }
+}
+
 async function generateMigration(migrationName) {
     try {
         const pathName = process.cwd();
         const initFile = await import(pathName + '/gina/initializeModels.ts');
 
         console.log('loading models...');
-        const sequelize = await initFile.default.initializeModels();
+        let initializeModels = initFile.initializeModels;
+        if (!initializeModels) {
+            initializeModels = initFile.default.initializeModels;
+        }
+        const sequelize = await initializeModels();
 
         console.log('loading gina lib...');
-        const ginaLib = await import(pathName + '/node_modules/gina-sequelize/dist/gina.js');
-        await ginaLib.default.default.createMigration(sequelize, migrationName);
+        const ginaLib = await loadGinaLib(pathName);
+        await ginaLib.createMigration(sequelize, migrationName);
 
         process.exit();
     } catch (err) {
@@ -139,7 +153,11 @@ async function upgrade() {
         const initFile = await import(pathName + '/gina/initializeModels.ts');
 
         console.log('loading models...');
-        const sequelize = await initFile.default.initializeModels();
+        let initializeModels = initFile.initializeModels;
+        if (!initializeModels) {
+            initializeModels = initFile.default.initializeModels;
+        }
+        const sequelize = await initializeModels();
 
         console.log('loading migrations...');
         const files = (await readdir(pathName + '/gina/migrations')).filter(file => !file.includes('.d.ts') && !file.includes('.js.map'));
@@ -149,12 +167,16 @@ async function upgrade() {
 
         for (const file of files) {
             const filePath = await import(pathName + '/gina/migrations/' + file);
-            migrations[file.replace('.ts', '')] = filePath.default;
+            if (filePath.default) {
+                migrations[file.replace('.ts', '')] = filePath.default;
+            } else {
+                migrations[file.replace('.ts', '')] = filePath;
+            }
         }
 
         console.log('loading gina lib...');
-        const ginaLib = await import(pathName + '/node_modules/gina-sequelize/dist/gina.js');
-        await ginaLib.default.default.runMigrations(sequelize, migrations);
+        const ginaLib = await loadGinaLib(pathName);
+        await ginaLib.runMigrations(sequelize, migrations);
 
         process.exit();
     } catch (err) {

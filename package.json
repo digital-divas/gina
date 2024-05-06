@@ -10,7 +10,8 @@
   "scripts": {
     "eslint": "eslint .",
     "eslint_fix": "eslint . --fix",
-    "build": "tsc"
+    "build": "tsc",
+    "gina-cli": "ts-node --esm ./bin/index.ts"
   },
   "repository": {
     "type": "git",

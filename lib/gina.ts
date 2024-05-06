@@ -198,6 +198,21 @@ class Migration {
 
         }
 
+        const modelIndexes = model.options.indexes;
+
+        if (modelIndexes) {
+            for (const modelIndex of modelIndexes) {
+                this.upIndexes = `
+        await queryInterface.addIndex('${model.getTableName()}', ['${modelIndex.fields?.join('\', \'')}'], {
+            name: '${modelIndex.name}',
+            unique: ${modelIndex.unique},
+        });
+`;
+                this.downFields = `
+        await queryInterface.removeIndex('${model.getTableName()}', '${modelIndex.name}');
+`;
+            }
+        }
         this.upTables += tabsToSpace(`\t\t});`);
 
         this.downTables = tabsToSpace(`\n\t\tawait queryInterface.dropTable('${model.getTableName()}');\n`) + this.downTables;
@@ -297,15 +312,23 @@ class Migration {
 
             const modelFields: string[] = [];
 
+            const modelRefs: string[] = [];
+
+            for (const modelAttr of Object.keys(modelAttrs)) {
+                if (modelAttrs[modelAttr].references) {
+                    modelRefs.push(modelAttrs[modelAttr].field || '');
+                }
+            }
+
             // check each field
             for (const modelAttr of Object.keys(modelAttrs)) {
                 modelFields.push(modelAttrs[modelAttr].field || modelAttr);
                 if (!Object.keys(attrs).includes(modelAttrs[modelAttr].field || modelAttr) && !(modelAttrs[modelAttr].type instanceof DataTypes.VIRTUAL)) {
                     this.newColumn(modelTable, modelAttrs[modelAttr]);
-
                     if (modelAttrs[modelAttr].references) {
                         const references = modelAttrs[modelAttr].references;
                         if (typeof references !== 'string') {
+
                             this.upForeignKey = `
         await queryInterface.addConstraint('${modelTable}', {
             type: 'foreign key',
@@ -324,6 +347,7 @@ class Migration {
                 }
             }
 
+            // drop column
             for (const attr of Object.keys(attrs)) {
                 if (!modelFields.includes(attr)) {
                     this.dropColumn(modelTable, attr, attrs[attr]);
@@ -359,6 +383,10 @@ class Migration {
                         continue;
                     }
                     if (index.name.includes('_ibfk')) {
+                        continue;
+                    }
+
+                    if (modelRefs.includes(index.name)) {
                         continue;
                     }
 
