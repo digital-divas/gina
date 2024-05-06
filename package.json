@@ -5,12 +5,13 @@
     "gina-cli": "./bin/index.ts"
   },
   "types": "./dist/gina.d.ts",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "Gina is a tool to auto-generate and run migrations based on Sequelize ORM.",
   "scripts": {
     "eslint": "eslint .",
     "eslint_fix": "eslint . --fix",
-    "build": "tsc"
+    "build": "tsc",
+    "gina-cli": "ts-node --esm ./bin/index.ts"
   },
   "repository": {
     "type": "git",
