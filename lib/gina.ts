@@ -178,7 +178,7 @@ class Migration {
             if (modelAttrs[modelAttrsKey].references) {
                 const references = modelAttrs[modelAttrsKey].references;
                 if (typeof references !== 'string') {
-                    this.upForeignKey = `
+                    this.upForeignKey += `
         await queryInterface.addConstraint('${model.getTableName()}', {
             type: 'foreign key',
             fields: ['${modelAttrs[modelAttrsKey].field}'],
@@ -202,15 +202,15 @@ class Migration {
 
         if (modelIndexes) {
             for (const modelIndex of modelIndexes) {
-                this.upIndexes = `
+                this.upIndexes += `
         await queryInterface.addIndex('${model.getTableName()}', ['${modelIndex.fields?.join('\', \'')}'], {
             name: '${modelIndex.name}',
             unique: ${modelIndex.unique},
         });
 `;
-                this.downFields = `
+                this.downIndexes = `
         await queryInterface.removeIndex('${model.getTableName()}', '${modelIndex.name}');
-`;
+` + this.downIndexes;
             }
         }
         this.upTables += tabsToSpace(`\t\t});`);
@@ -312,13 +312,13 @@ class Migration {
 
             const modelFields: string[] = [];
 
-            const modelRefs: string[] = [];
+            // const modelRefs: string[] = [];
 
-            for (const modelAttr of Object.keys(modelAttrs)) {
-                if (modelAttrs[modelAttr].references) {
-                    modelRefs.push(modelAttrs[modelAttr].field || '');
-                }
-            }
+            // for (const modelAttr of Object.keys(modelAttrs)) {
+            //     if (modelAttrs[modelAttr].references) {
+            //         modelRefs.push(modelAttrs[modelAttr].field || '');
+            //     }
+            // }
 
             // check each field
             for (const modelAttr of Object.keys(modelAttrs)) {
@@ -329,7 +329,7 @@ class Migration {
                         const references = modelAttrs[modelAttr].references;
                         if (typeof references !== 'string') {
 
-                            this.upForeignKey = `
+                            this.upForeignKey += `
         await queryInterface.addConstraint('${modelTable}', {
             type: 'foreign key',
             fields: ['${modelAttrs[modelAttr].field}'],
@@ -361,15 +361,15 @@ class Migration {
             if (modelIndexes) {
                 for (const modelIndex of modelIndexes) {
                     if (!indexes.find((index) => index.name == modelIndex.name)) {
-                        this.upIndexes = `
+                        this.upIndexes += `
         await queryInterface.addIndex('${modelTable}', ['${modelIndex.fields?.join('\', \'')}'], {
             name: '${modelIndex.name}',
             unique: ${modelIndex.unique},
         });
 `;
-                        this.downFields = `
+                        this.downIndexes = `
         await queryInterface.removeIndex('${modelTable}', '${modelIndex.name}');
-`;
+` + this.downIndexes;
                     }
                 }
             }
@@ -386,22 +386,22 @@ class Migration {
                         continue;
                     }
 
-                    if (modelRefs.includes(index.name)) {
-                        continue;
-                    }
+                    // if (modelRefs.includes(index.name)) {
+                    //     continue;
+                    // }
 
                     if (modelIndexes === undefined || !modelIndexes.find((modelIndex) => index.name == modelIndex.name)) {
-                        this.upIndexes = `
+                        this.upIndexes += `
         await queryInterface.removeIndex('${modelTable}', '${index.name}');
 
 `;
 
-                        this.downFields = `
+                        this.downIndexes = `
         await queryInterface.addIndex('${modelTable}', ['${index.fields?.map(field => field.attribute).join('\', \'')}'], {
             name: '${index.name}',
             unique: ${index.unique},
         });
-`;
+` + this.downIndexes;
                     }
                 }
             }
