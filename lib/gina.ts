@@ -312,13 +312,13 @@ class Migration {
 
             const modelFields: string[] = [];
 
-            // const modelRefs: string[] = [];
+            const modelRefs: string[] = [];
 
-            // for (const modelAttr of Object.keys(modelAttrs)) {
-            //     if (modelAttrs[modelAttr].references) {
-            //         modelRefs.push(modelAttrs[modelAttr].field || '');
-            //     }
-            // }
+            for (const modelAttr of Object.keys(modelAttrs)) {
+                if (modelAttrs[modelAttr].references) {
+                    modelRefs.push(modelAttrs[modelAttr].field || '');
+                }
+            }
 
             // check each field
             for (const modelAttr of Object.keys(modelAttrs)) {
@@ -382,13 +382,14 @@ class Migration {
                     if (index.name.endsWith('_fk')) {
                         continue;
                     }
+                    // this may be necessary only for databases previously created with sequelize.sync
                     if (index.name.includes('_ibfk')) {
                         continue;
                     }
-
-                    // if (modelRefs.includes(index.name)) {
-                    //     continue;
-                    // }
+                    // this may be necessary only for databases previously created with sequelize.sync
+                    if (modelRefs.includes(index.name)) {
+                        continue;
+                    }
 
                     if (modelIndexes === undefined || !modelIndexes.find((modelIndex) => index.name == modelIndex.name)) {
                         this.upIndexes += `
