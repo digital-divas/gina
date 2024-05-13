@@ -150,7 +150,16 @@ async function generateMigration(migrationName) {
 async function upgrade() {
     try {
         const pathName = process.cwd();
-        const initFile = await import(pathName + '/gina/initializeModels.ts');
+
+        const ginaFolder = (await readdir(pathName + '/gina')).filter(file => !file.includes('.d.ts') && !file.includes('.js.map'));
+
+        let initializeModelsFile = 'initializeModels.ts';
+
+        if (ginaFolder.includes('initializeModels.js')) {
+            initializeModelsFile = 'initializeModels.js';
+        }
+
+        const initFile = await import(pathName + '/gina/' + initializeModelsFile);
 
         console.log('loading models...');
         let initializeModels = initFile.initializeModels;
