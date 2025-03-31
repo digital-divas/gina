@@ -7,7 +7,7 @@ interface MigrationFiles {
     [version: string]: { migration: MigrationFile; };
 }
 
-async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles) {
+async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles, updateAtFieldName: string | undefined) {
     const tables = await sequelize.getQueryInterface().showAllTables();
 
     let version = '';
@@ -26,16 +26,20 @@ async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFile
 
     console.info('current version:', version);
 
+    if (!updateAtFieldName) {
+        updateAtFieldName = 'updatedAt';
+    }
+
     for (const migrationFile of Object.keys(migrationFiles)) {
         if (migrationFile > version) {
             console.info('applying migration:', migrationFile);
             await migrationFiles[migrationFile].migration.up(sequelize.getQueryInterface());
             if (version) {
                 version = migrationFile;
-                await sequelize.query(`UPDATE gina_version SET version = '${version}', updatedAt = NOW();`);
+                await sequelize.query(`UPDATE gina_version SET version = '${version}', ${updateAtFieldName} = NOW();`);
             } else {
                 version = migrationFile;
-                await sequelize.query(`INSERT INTO gina_version (updatedAt, version) VALUES (NOW(),'${version}');`);
+                await sequelize.query(`INSERT INTO gina_version (${updateAtFieldName}, version) VALUES (NOW(),'${version}');`);
             }
             console.info('applied version:', migrationFile);
         }
