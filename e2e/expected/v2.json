@@ -1,0 +1,109 @@
+{
+  "comments": {
+    "columns": {
+      "id": "int NOT NULL PRI auto_increment",
+      "post_id": "bigint NOT NULL MUL",
+      "body": "text NOT NULL",
+      "created_at": "datetime NULL",
+      "updated_at": "datetime NULL"
+    },
+    "indexes": {
+      "comments_post_id_posts_fk": {
+        "unique": false,
+        "columns": [
+          "post_id"
+        ]
+      },
+      "PRIMARY": {
+        "unique": true,
+        "columns": [
+          "id"
+        ]
+      }
+    },
+    "foreignKeys": {
+      "comments_post_id_posts_fk": "post_id -> posts.id ON UPDATE CASCADE ON DELETE CASCADE"
+    }
+  },
+  "gina_version": {
+    "columns": {
+      "id": "int NOT NULL PRI auto_increment",
+      "version": "varchar(255) NOT NULL",
+      "createdAt": "datetime NULL",
+      "updatedAt": "datetime NULL"
+    },
+    "indexes": {
+      "PRIMARY": {
+        "unique": true,
+        "columns": [
+          "id"
+        ]
+      }
+    },
+    "foreignKeys": {}
+  },
+  "posts": {
+    "columns": {
+      "id": "bigint NOT NULL PRI auto_increment",
+      "user_id": "int NOT NULL MUL",
+      "title": "varchar(255) NOT NULL",
+      "views": "int NOT NULL DEFAULT 10",
+      "status": "enum('draft','published','archived') NOT NULL DEFAULT draft",
+      "rating": "decimal(3,1) NULL",
+      "published_at": "datetime NULL",
+      "created_at": "datetime NULL",
+      "updated_at": "datetime NULL"
+    },
+    "indexes": {
+      "posts_user_published": {
+        "unique": false,
+        "columns": [
+          "user_id",
+          "published_at DESC"
+        ]
+      },
+      "PRIMARY": {
+        "unique": true,
+        "columns": [
+          "id"
+        ]
+      }
+    },
+    "foreignKeys": {
+      "posts_user_id_users_fk": "user_id -> users.id ON UPDATE CASCADE ON DELETE CASCADE"
+    }
+  },
+  "users": {
+    "columns": {
+      "id": "int NOT NULL PRI auto_increment",
+      "name": "varchar(255) NOT NULL MUL",
+      "email": "varchar(200) NOT NULL UNI",
+      "is_active": "tinyint(1) NOT NULL DEFAULT 1",
+      "age": "int NOT NULL DEFAULT 0",
+      "created_at": "datetime NULL",
+      "updated_at": "datetime NULL",
+      "nickname": "varchar(255) NULL"
+    },
+    "indexes": {
+      "PRIMARY": {
+        "unique": true,
+        "columns": [
+          "id"
+        ]
+      },
+      "users_email_unique": {
+        "unique": true,
+        "columns": [
+          "email"
+        ]
+      },
+      "users_name": {
+        "unique": false,
+        "columns": [
+          "name"
+        ]
+      }
+    },
+    "foreignKeys": {}
+  }
+}

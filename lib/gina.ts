@@ -1,10 +1,30 @@
-import { DataTypes, ModelCtor, Model, Sequelize, ModelAttributeColumnOptions, QueryTypes, ColumnDescription } from 'sequelize';
+import { ModelCtor, Model, Sequelize, ModelAttributeColumnOptions, QueryTypes } from 'sequelize';
 import fs from 'fs/promises';
+import path from 'path';
 import moment from 'moment';
 import { MigrationFile } from './typings/migration';
+import {
+    DatabaseColumn,
+    ModelDataType,
+    quote,
+    modelTypeToCode,
+    normalizeColumnType,
+    modelDefaultToSql,
+    sameDefault,
+    databaseTypeToCode,
+    databaseDefaultToCode,
+} from './column-types';
 
 interface MigrationFiles {
     [version: string]: { migration: MigrationFile; };
+}
+
+/**
+ * Versions used to be saved with the file extension when migrations ran from compiled .js files
+ * (e.g. `20240101000000-foo.js`), so they're compared without it.
+ */
+function stripExtension(version: string) {
+    return version.replace(/\.[cm]?[jt]s$/, '');
 }
 
 async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles, updateAtFieldName: string | undefined) {
@@ -21,7 +41,7 @@ async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFile
             throw new Error('There must be only one version on `gina_version` table.');
         }
 
-        version = versions.length == 1 ? versions[0].version : '';
+        version = versions.length == 1 ? stripExtension(versions[0].version) : '';
     }
 
     console.info('current version:', version);
@@ -30,20 +50,55 @@ async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFile
         updateAtFieldName = 'updatedAt';
     }
 
-    for (const migrationFile of Object.keys(migrationFiles)) {
-        if (migrationFile > version) {
+    for (const migrationFile of Object.keys(migrationFiles).sort()) {
+        if (stripExtension(migrationFile) > version) {
             console.info('applying migration:', migrationFile);
             await migrationFiles[migrationFile].migration.up(sequelize.getQueryInterface());
             if (version) {
-                version = migrationFile;
+                version = stripExtension(migrationFile);
                 await sequelize.query(`UPDATE gina_version SET version = '${version}', ${updateAtFieldName} = NOW();`);
             } else {
-                version = migrationFile;
+                version = stripExtension(migrationFile);
                 await sequelize.query(`INSERT INTO gina_version (${updateAtFieldName}, version) VALUES (NOW(),'${version}');`);
             }
             console.info('applied version:', migrationFile);
         }
     }
+}
+
+/**
+ * Index fields can be plain column names or objects like `{ name: 'time', order: 'DESC' }`.
+ */
+function formatIndexFields(fields: unknown[] | undefined) {
+    const formatted = (fields ?? []).map((field) => {
+        if (typeof field === 'string') {
+            return `'${field}'`;
+        }
+        const { name, order, length, collate } = field as { name: string; order?: string; length?: number; collate?: string; };
+        const props = [`name: '${name}'`];
+        if (order) {
+            props.push(`order: '${order}'`);
+        }
+        if (length) {
+            props.push(`length: ${length}`);
+        }
+        if (collate) {
+            props.push(`collate: '${collate}'`);
+        }
+        return `{ ${props.join(', ')} }`;
+    });
+    return `[${formatted.join(', ')}]`;
+}
+
+function isVirtual(attribute: { type?: unknown; }) {
+    return (attribute.type as ModelDataType | undefined)?.key === 'VIRTUAL';
+}
+
+/**
+ * Sequelize columns are nullable unless `allowNull: false`, and primary keys never are.
+ */
+function isNullable(attribute: { allowNull?: boolean; primaryKey?: boolean; }) {
+    return attribute.allowNull !== false && !attribute.primaryKey;
 }
 
 function tabsToSpace(str: string) {
@@ -119,44 +174,29 @@ class Migration {
         return model.primaryKey ?? 'true' ? 'true' : 'false';
     }
 
-    getType(model: { type?: DataTypes.DataType; }) {
-        if (model.type instanceof DataTypes.BIGINT) {
-            return 'DataTypes.BIGINT';
+    getType(model: { type?: unknown; }) {
+        return modelTypeToCode(model.type as ModelDataType);
+    }
+
+    useSequelize() {
+        if (!this.imports.includes('Sequelize')) {
+            this.imports.push('Sequelize');
         }
-        if (model.type instanceof DataTypes.INTEGER) {
-            return 'DataTypes.INTEGER';
-        }
-        if (model.type instanceof DataTypes.STRING) {
-            return 'DataTypes.STRING';
-        }
-        if (model.type instanceof DataTypes.DATE) {
-            return 'DataTypes.DATE';
-        }
-        if (model.type instanceof DataTypes.TEXT) {
-            return 'DataTypes.TEXT';
-        }
-        if (model.type instanceof DataTypes.BOOLEAN) {
-            return 'DataTypes.BOOLEAN';
-        }
-        return '';
     }
 
     getDefaultValue(model: { defaultValue?: unknown; }) {
+        const defaultValue = model.defaultValue;
 
-        const val = (model.defaultValue as { val?: string; }).val;
-
-        if (val) {
-            if (!this.imports.includes('Sequelize')) {
-                this.imports.push('Sequelize');
-            }
-            return `Sequelize.literal('${val}')`;
-        } else if (typeof model.defaultValue == 'number') {
-            return String(model.defaultValue);
-        } else if (typeof model.defaultValue == 'boolean') {
-            return String(model.defaultValue);
+        if (defaultValue === null) {
+            return 'null';
+        } else if (typeof defaultValue == 'object' && 'val' in defaultValue) {
+            this.useSequelize();
+            return `Sequelize.literal(${quote(String((defaultValue as { val: unknown; }).val))})`;
+        } else if (typeof defaultValue == 'number' || typeof defaultValue == 'boolean') {
+            return String(defaultValue);
         }
 
-        return `'${model.defaultValue}'`;
+        return quote(String(defaultValue));
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -175,7 +215,7 @@ class Migration {
 
             const attribute = modelAttrs[modelAttrsKey];
 
-            if (attribute.type instanceof DataTypes.VIRTUAL) {
+            if (isVirtual(attribute)) {
                 continue;
             }
 
@@ -207,7 +247,8 @@ class Migration {
         if (modelIndexes) {
             for (const modelIndex of modelIndexes) {
                 this.upIndexes += `
-        await queryInterface.addIndex('${model.getTableName()}', ['${modelIndex.fields?.join('\', \'')}'], {
+        await queryInterface.addIndex('${model.getTableName()}', {
+            fields: ${formatIndexFields(modelIndex.fields)},
             name: '${modelIndex.name}',
             unique: ${modelIndex.unique},
         });
@@ -242,7 +283,7 @@ class Migration {
         if (attribute.primaryKey !== undefined) {
             attrProps += tabsToSpace(`\n${tabs(tabsQty)}primaryKey: ${this.getPrimaryKey(attribute)},`);
         }
-        if (attribute.defaultValue !== undefined) {
+        if (modelDefaultToSql(attribute.defaultValue) !== undefined && attribute.defaultValue !== undefined) {
             attrProps += tabsToSpace(`\n${tabs(tabsQty)}defaultValue: ${this.getDefaultValue(attribute)},`);
         }
 
@@ -258,42 +299,129 @@ class Migration {
         this.downFields = tabsToSpace(`\n\t\tawait queryInterface.removeColumn('${tableName}', '${attribute.field}');\n`) + this.downFields;
     }
 
-    columnAttributeProps(attribute: ColumnDescription) {
+    /**
+     * Props that recreate a column as it currently is in the database.
+     */
+    columnAttributeProps(column: DatabaseColumn, tabsQty: number) {
         if (!this.imports.includes('DataTypes')) {
             this.imports.push('DataTypes');
         }
 
-        let attrProps = '';
-
-        let dataTypes = attribute.type;
-
-        if (dataTypes.includes('VARCHAR(')) {
-            dataTypes = dataTypes.replace('VARCHAR(', 'STRING(');
-        } else if (dataTypes == 'INT') {
-            dataTypes = 'INTEGER';
+        let attrProps = tabsToSpace(`\n${tabs(tabsQty)}type: ${databaseTypeToCode(column.type)},`);
+        if (column.autoIncrement) {
+            attrProps += tabsToSpace(`\n${tabs(tabsQty)}autoIncrement: true,`);
         }
-
-        attrProps += tabsToSpace(`\n${tabs(3)}type: DataTypes.${dataTypes},`);
-        if (attribute.autoIncrement !== null) {
-            attrProps += tabsToSpace(`\n${tabs(3)}autoIncrement: ${this.getAutoIncrement(attribute)},`);
-        }
-        if (attribute.allowNull !== null) {
-            attrProps += tabsToSpace(`\n${tabs(3)}allowNull: ${this.getAllowNull(attribute)},`);
-        }
-        if (attribute.primaryKey !== null) {
-            attrProps += tabsToSpace(`\n${tabs(3)}primaryKey: ${this.getPrimaryKey(attribute)},`);
-        }
-        if (attribute.defaultValue !== null) {
-            attrProps += tabsToSpace(`\n${tabs(3)}defaultValue: ${this.getDefaultValue(attribute)},`);
+        attrProps += tabsToSpace(`\n${tabs(tabsQty)}allowNull: ${column.allowNull},`);
+        if (column.defaultValue !== null) {
+            const { code, needsSequelize } = databaseDefaultToCode(column.defaultValue, column.type);
+            if (needsSequelize) {
+                this.useSequelize();
+            }
+            attrProps += tabsToSpace(`\n${tabs(tabsQty)}defaultValue: ${code},`);
         }
 
         return attrProps;
     }
 
-    dropColumn(tableName: string, field: string, attribute: ColumnDescription) {
+    /**
+     * Props for `changeColumn` with the model's definition. Primary keys and references are left out:
+     * MySQL would try to add them again.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    changedAttributeProps(attribute: ModelAttributeColumnOptions<Model<any, any>>, tabsQty: number) {
+        let attrProps = tabsToSpace(`\n${tabs(tabsQty)}type: ${this.getType(attribute)},`);
+        if (attribute.autoIncrement) {
+            attrProps += tabsToSpace(`\n${tabs(tabsQty)}autoIncrement: true,`);
+        }
+        attrProps += tabsToSpace(`\n${tabs(tabsQty)}allowNull: ${isNullable(attribute)},`);
+        if (attribute.defaultValue !== undefined && modelDefaultToSql(attribute.defaultValue) !== undefined) {
+            attrProps += tabsToSpace(`\n${tabs(tabsQty)}defaultValue: ${this.getDefaultValue(attribute)},`);
+        }
+        return attrProps;
+    }
+
+    dropColumn(tableName: string, field: string, column: DatabaseColumn) {
         console.debug(`drop column ${tableName} ${field} `);
         this.upFields += tabsToSpace(`\n\t\tawait queryInterface.removeColumn('${tableName}', '${field}');\n`);
-        this.downFields = tabsToSpace(`\n\t\tawait queryInterface.addColumn('${tableName}', '${field}', {${this.columnAttributeProps(attribute)}\n\t\t});`) + this.downFields;
+        this.downFields = tabsToSpace(`\n\t\tawait queryInterface.addColumn('${tableName}', '${field}', {${this.columnAttributeProps(column, 3)}\n\t\t});\n`) + this.downFields;
+    }
+
+    /**
+     * Compares a model attribute with its column and returns what changed (type, nullability, default).
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    columnChanges(attribute: ModelAttributeColumnOptions<Model<any, any>>, column: DatabaseColumn) {
+        const changes: string[] = [];
+
+        const modelType = normalizeColumnType((attribute.type as ModelDataType).toSql({ escape: (value) => this.sequelize.escape(value as string) }));
+        const databaseType = normalizeColumnType(column.type);
+        if (modelType !== databaseType) {
+            changes.push(`type ${databaseType} -> ${modelType}`);
+        }
+
+        if (isNullable(attribute) !== column.allowNull) {
+            changes.push(`allowNull ${column.allowNull} -> ${isNullable(attribute)}`);
+        }
+
+        const modelDefault = modelDefaultToSql(attribute.defaultValue);
+        if (modelDefault !== undefined && !sameDefault(modelDefault, column.defaultValue)) {
+            changes.push(`default ${column.defaultValue} -> ${modelDefault}`);
+        }
+
+        return changes;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    changeColumn(tableName: string, attribute: ModelAttributeColumnOptions<Model<any, any>>, column: DatabaseColumn, changes: string[]) {
+        console.debug(`change column ${tableName} ${attribute.field}: ${changes.join(', ')}`);
+        this.upFields += tabsToSpace(`\n\t\tawait queryInterface.changeColumn('${tableName}', '${attribute.field}', {${this.changedAttributeProps(attribute, 3)}\n\t\t});\n`);
+        this.downFields = tabsToSpace(`\n\t\tawait queryInterface.changeColumn('${tableName}', '${attribute.field}', {${this.columnAttributeProps(column, 3)}\n\t\t});\n`) + this.downFields;
+    }
+
+    get supportsColumnChanges() {
+        return ['mysql', 'mariadb'].includes(this.sequelize.getDialect());
+    }
+
+    /**
+     * Reads the table's columns. On MySQL/MariaDB it uses information_schema, which keeps
+     * the full column type (e.g. enum values with their original case); other dialects use describeTable.
+     */
+    async describeColumns(tableName: string): Promise<{ [column: string]: DatabaseColumn; }> {
+        const columns: { [column: string]: DatabaseColumn; } = {};
+
+        if (this.supportsColumnChanges) {
+            const rows: { name: string; type: string; nullable: string; defaultValue: string | null; extra: string; columnKey: string; }[] = await this.sequelize.query(`
+                SELECT COLUMN_NAME AS name, COLUMN_TYPE AS type, IS_NULLABLE AS nullable, COLUMN_DEFAULT AS defaultValue, EXTRA AS extra, COLUMN_KEY AS columnKey
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tableName
+                ORDER BY ORDINAL_POSITION`, {
+                type: QueryTypes.SELECT,
+                replacements: { tableName },
+            });
+
+            for (const row of rows) {
+                columns[row.name] = {
+                    type: row.type,
+                    allowNull: row.nullable === 'YES',
+                    defaultValue: row.defaultValue,
+                    autoIncrement: row.extra.includes('auto_increment'),
+                    primaryKey: row.columnKey === 'PRI',
+                };
+            }
+            return columns;
+        }
+
+        const description = await this.sequelize.getQueryInterface().describeTable(tableName);
+        for (const [name, column] of Object.entries(description)) {
+            columns[name] = {
+                type: column.type,
+                allowNull: column.allowNull,
+                defaultValue: column.defaultValue as string | null,
+                autoIncrement: Boolean(column.autoIncrement),
+                primaryKey: column.primaryKey,
+            };
+        }
+        return columns;
     }
 
     async checkDiffs() {
@@ -312,7 +440,7 @@ class Migration {
 
             const modelAttrs = this.sequelize.models[model].getAttributes();
             const queryInterface = this.sequelize.getQueryInterface();
-            const attrs = await queryInterface.describeTable(modelTable);
+            const attrs = await this.describeColumns(modelTable);
 
             const modelFields: string[] = [];
 
@@ -327,7 +455,14 @@ class Migration {
             // check each field
             for (const modelAttr of Object.keys(modelAttrs)) {
                 modelFields.push(modelAttrs[modelAttr].field || modelAttr);
-                if (!Object.keys(attrs).includes(modelAttrs[modelAttr].field || modelAttr) && !(modelAttrs[modelAttr].type instanceof DataTypes.VIRTUAL)) {
+                const column = attrs[modelAttrs[modelAttr].field || modelAttr];
+                if (column && !isVirtual(modelAttrs[modelAttr]) && this.supportsColumnChanges) {
+                    const changes = this.columnChanges(modelAttrs[modelAttr], column);
+                    if (changes.length) {
+                        this.changeColumn(modelTable, modelAttrs[modelAttr], column, changes);
+                    }
+                }
+                if (!column && !isVirtual(modelAttrs[modelAttr])) {
                     this.newColumn(modelTable, modelAttrs[modelAttr]);
                     if (modelAttrs[modelAttr].references) {
                         const references = modelAttrs[modelAttr].references;
@@ -366,7 +501,8 @@ class Migration {
                 for (const modelIndex of modelIndexes) {
                     if (!indexes.find((index) => index.name == modelIndex.name)) {
                         this.upIndexes += `
-        await queryInterface.addIndex('${modelTable}', ['${modelIndex.fields?.join('\', \'')}'], {
+        await queryInterface.addIndex('${modelTable}', {
+            fields: ${formatIndexFields(modelIndex.fields)},
             name: '${modelIndex.name}',
             unique: ${modelIndex.unique},
         });
@@ -420,7 +556,7 @@ class Migration {
         }
     }
 
-    async generateFile(migrationName: string) {
+    async generateFile(migrationName: string, migrationsDir: string) {
         const migration = `import { ${this.imports.join(', ')} } from 'sequelize';
 
 export const migration = {
@@ -438,11 +574,13 @@ ${this.downTables}
     }
 };`;
 
-        await fs.writeFile(`./gina/migrations/${moment().format('YYYYMMDDHHmmss')}-${migrationName.toLowerCase().replaceAll(' ', '-')}.ts`, migration);
+        const fileName = `${moment().format('YYYYMMDDHHmmss')}-${migrationName.toLowerCase().replaceAll(' ', '-')}.ts`;
+        await fs.writeFile(path.join(migrationsDir, fileName), migration);
+        console.info('migration created:', path.join(migrationsDir, fileName));
     }
 }
 
-async function createMigration(sequelize: Sequelize, migrationName: string) {
+async function createMigration(sequelize: Sequelize, migrationName: string, migrationsDir = './gina/migrations') {
 
     const migration = new Migration(sequelize);
     await migration.loadDatabaseTables();
@@ -451,8 +589,9 @@ async function createMigration(sequelize: Sequelize, migrationName: string) {
 
     if (!migration.upTables && !migration.upFields && !migration.upIndexes && !migration.upForeignKey) {
         console.info('There\'s no changes between your models and the database.');
+        return;
     }
-    await migration.generateFile(migrationName);
+    await migration.generateFile(migrationName, migrationsDir);
 
 }
 
@@ -461,4 +600,5 @@ const gina = {
     createMigration,
 };
 
+export { runMigrations, createMigration };
 export default gina;

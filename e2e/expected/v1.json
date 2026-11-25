@@ -1,0 +1,77 @@
+{
+  "gina_version": {
+    "columns": {
+      "id": "int NOT NULL PRI auto_increment",
+      "version": "varchar(255) NOT NULL",
+      "createdAt": "datetime NULL",
+      "updatedAt": "datetime NULL"
+    },
+    "indexes": {
+      "PRIMARY": {
+        "unique": true,
+        "columns": [
+          "id"
+        ]
+      }
+    },
+    "foreignKeys": {}
+  },
+  "posts": {
+    "columns": {
+      "id": "bigint NOT NULL PRI auto_increment",
+      "user_id": "int NOT NULL MUL",
+      "title": "varchar(255) NOT NULL",
+      "views": "int NOT NULL DEFAULT 0",
+      "status": "enum('draft','published') NOT NULL DEFAULT draft",
+      "rating": "decimal(3,1) NULL",
+      "published_at": "datetime NULL",
+      "created_at": "datetime NULL",
+      "updated_at": "datetime NULL"
+    },
+    "indexes": {
+      "posts_user_published": {
+        "unique": false,
+        "columns": [
+          "user_id",
+          "published_at DESC"
+        ]
+      },
+      "PRIMARY": {
+        "unique": true,
+        "columns": [
+          "id"
+        ]
+      }
+    },
+    "foreignKeys": {
+      "posts_user_id_users_fk": "user_id -> users.id ON UPDATE CASCADE ON DELETE CASCADE"
+    }
+  },
+  "users": {
+    "columns": {
+      "id": "int NOT NULL PRI auto_increment",
+      "name": "varchar(255) NOT NULL",
+      "email": "varchar(150) NOT NULL UNI",
+      "is_active": "tinyint(1) NOT NULL DEFAULT 1",
+      "age": "int NULL",
+      "bio": "text NULL",
+      "created_at": "datetime NULL",
+      "updated_at": "datetime NULL"
+    },
+    "indexes": {
+      "PRIMARY": {
+        "unique": true,
+        "columns": [
+          "id"
+        ]
+      },
+      "users_email_unique": {
+        "unique": true,
+        "columns": [
+          "email"
+        ]
+      }
+    },
+    "foreignKeys": {}
+  }
+}
