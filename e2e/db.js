@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
-// Small MySQL helper for the e2e runner: node e2e/db.js <create|drop|dump|version>
+// Small MySQL helper for the e2e runner: node e2e/db.js <create|drop|dump|version|tables|temporary-databases>
 const mysql = require('mysql2/promise');
 
 const database = process.env.DB_NAME;
@@ -21,6 +21,12 @@ async function main(command) {
         } else if (command === 'version') {
             const [rows] = await connection.query(`SELECT version FROM \`${database}\`.gina_version`);
             console.log(rows.map(row => row.version).join('\n'));
+        } else if (command === 'tables') {
+            const [rows] = await connection.query('SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME', [database]);
+            console.log(rows.map(row => row.name).join('\n'));
+        } else if (command === 'temporary-databases') {
+            const [rows] = await connection.query('SELECT SCHEMA_NAME AS name FROM information_schema.SCHEMATA WHERE SCHEMA_NAME LIKE \'gina\\_tmp\\_%\'');
+            console.log(rows.map(row => row.name).join('\n'));
         } else if (command === 'dump') {
             console.log(JSON.stringify(await dump(connection), null, 2));
         } else {

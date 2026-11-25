@@ -1,0 +1,19 @@
+{
+  "gina_version": {
+    "columns": {
+      "id": "int NOT NULL PRI auto_increment",
+      "version": "varchar(255) NOT NULL",
+      "createdAt": "datetime NULL",
+      "updatedAt": "datetime NULL"
+    },
+    "indexes": {
+      "PRIMARY": {
+        "unique": true,
+        "columns": [
+          "id"
+        ]
+      }
+    },
+    "foreignKeys": {}
+  }
+}
