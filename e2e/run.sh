@@ -42,6 +42,34 @@ assert_version() {
     [ "$version" = "$expected" ] || fail "gina_version is '$version', expected '$expected'"
 }
 
+MIGRATIONS_DIR="$PROJECT_DIR/gina/migrations"
+head_file() { cat "$MIGRATIONS_DIR/HEAD"; }
+
+# expect_failure <pattern> <command...>: the command must fail and print <pattern>
+expect_failure() {
+    local pattern="$1" output
+    shift
+    if output="$("$@" 2>&1)"; then
+        echo "$output"
+        fail "'$*' should have failed"
+    fi
+    echo "$output" | grep -q -- "$pattern" || { echo "$output"; fail "'$*' failed without '$pattern'"; }
+    echo "failed as expected: $pattern"
+}
+
+# add_scenario <scenario> <migration name> <previous>: copies e2e/scenarios/<scenario>.ts into the project
+add_scenario() {
+    sed "s/PREVIOUS/$3/" "$E2E_DIR/scenarios/$1.ts" > "$MIGRATIONS_DIR/$2.ts"
+}
+
+assert_table() {
+    db tables | grep -qx "$1" || fail "table $1 should exist"
+}
+
+assert_no_temporary_databases() {
+    [ -z "$(db temporary-databases)" ] || fail "temporary databases were left behind: $(db temporary-databases)"
+}
+
 assert_schema() {
     local expected="$E2E_DIR/expected/$1.json"
     db dump > "$WORK_DIR/$1.json"
@@ -134,6 +162,98 @@ assert_migration_count 3
 step "upgrade again is a no-op"
 npm run --silent db:upgrade
 assert_version
+
+step "migrations form a chain: each generated one runs after the previous, HEAD has the last one"
+INITIAL="$(nth_migration 2)"
+SECOND="$(nth_migration 3)"
+grep -q "export const previous = '$(nth_migration 1)'" "$MIGRATIONS_DIR/$INITIAL.ts" || fail "$INITIAL should run after $(nth_migration 1)"
+grep -q "export const previous = '$INITIAL'" "$MIGRATIONS_DIR/$SECOND.ts" || fail "$SECOND should run after $INITIAL"
+[ "$(head_file)" = "$SECOND" ] || fail "HEAD should be $SECOND"
+npx gina-cli check
+
+step "a branch merged late: two migrations after the same one are refused"
+# named to sort before $SECOND, like a branch created before it but merged after it
+LATE="${INITIAL%%-*}-late-branch"
+add_scenario late-branch "$LATE" "$INITIAL"
+expect_failure "all run right after $INITIAL" npx gina-cli check
+expect_failure "all run right after $INITIAL" npx gina-cli upgrade
+expect_failure "all run right after $INITIAL" npx gina-cli generate-migration "should not be created"
+assert_version "$SECOND"
+
+step "after the conflict is resolved, the late migration runs even though its name sorts first"
+add_scenario late-branch "$LATE" "$SECOND"
+expect_failure "HEAD says the last migration is $SECOND" npx gina-cli check
+echo "$LATE" > "$MIGRATIONS_DIR/HEAD"
+npx gina-cli check
+npx gina-cli upgrade
+assert_version "$LATE"
+assert_table late_branch
+npx gina-cli downgrade
+assert_version "$SECOND"
+assert_schema v2
+rm "$MIGRATIONS_DIR/$LATE.ts"
+echo "$SECOND" > "$MIGRATIONS_DIR/HEAD"
+
+step "upgrade --dry-run catches a failing migration without touching the database"
+HALFWAY="$(date +%Y%m%d%H%M%S)-fails-halfway"
+add_scenario fails-halfway "$HALFWAY" "$SECOND"
+echo "$HALFWAY" > "$MIGRATIONS_DIR/HEAD"
+expect_failure "dry run failed" npx gina-cli upgrade --dry-run
+assert_version "$SECOND"
+assert_schema v2
+assert_no_temporary_databases
+
+step "a migration that fails halfway is recorded, and upgrade refuses to run until it's repaired"
+expect_failure "addColumn users.halfway" npx gina-cli upgrade
+expect_failure "repair --continue" npx gina-cli upgrade
+expect_failure "repair --continue" npx gina-cli downgrade
+assert_version "$SECOND"
+
+step "repair --rollback undoes what was applied"
+npx gina-cli repair --rollback | tee "$WORK_DIR/repair.log"
+grep -q "skipped: removeIndex users users_halfway" "$WORK_DIR/repair.log" || fail "repair should skip the index that was never created"
+assert_version "$SECOND"
+assert_schema v2
+
+step "repair --continue finishes the migration after the cause is fixed"
+expect_failure "addColumn users.halfway" npx gina-cli upgrade
+sed -i.bak "s/missing_column/halfway/" "$MIGRATIONS_DIR/$HALFWAY.ts" && rm "$MIGRATIONS_DIR/$HALFWAY.ts.bak"
+npx gina-cli repair --continue | tee "$WORK_DIR/repair.log"
+grep -q "skipped: addColumn users.halfway" "$WORK_DIR/repair.log" || fail "repair should skip the column that was already added"
+assert_version "$HALFWAY"
+npx gina-cli repair --continue | grep -q "Nothing to repair" || fail "repair without a failure should do nothing"
+npx gina-cli downgrade
+assert_schema v2
+
+step "upgrade --dry-run passes on a valid migration and changes nothing"
+npx gina-cli upgrade --dry-run
+assert_version "$SECOND"
+assert_schema v2
+assert_no_temporary_databases
+rm "$MIGRATIONS_DIR/$HALFWAY.ts"
+echo "$SECOND" > "$MIGRATIONS_DIR/HEAD"
+
+step "snapshot, then upgrade --from-snapshot on an empty database"
+npx gina-cli snapshot
+grep -q "^-- version: $SECOND$" "$PROJECT_DIR/gina/snapshot.sql" || fail "snapshot should be at $SECOND"
+assert_no_temporary_databases
+expect_failure "only works on an empty database" npx gina-cli upgrade --from-snapshot
+# a migration added after the snapshot was taken still runs
+add_scenario late-branch "$LATE" "$SECOND"
+echo "$LATE" > "$MIGRATIONS_DIR/HEAD"
+db create
+npx gina-cli upgrade --from-snapshot | tee "$WORK_DIR/snapshot.log"
+grep -q "applying migration: $LATE" "$WORK_DIR/snapshot.log" || fail "the migration after the snapshot should run"
+grep -q "applying migration: $INITIAL" "$WORK_DIR/snapshot.log" && fail "migrations in the snapshot should not run"
+assert_version "$LATE"
+npx gina-cli downgrade
+assert_schema v2
+npx gina-cli downgrade --to "$INITIAL"
+assert_schema v1
+rm "$MIGRATIONS_DIR/$LATE.ts" "$PROJECT_DIR/gina/snapshot.sql"
+echo "$SECOND" > "$MIGRATIONS_DIR/HEAD"
+npm run --silent db:upgrade
+assert_schema v2
 
 step "production-like run: compiled .js only, no TypeScript sources"
 npx tsc --outDir "$WORK_DIR/dist"

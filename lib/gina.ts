@@ -1,8 +1,8 @@
 import { ModelCtor, Model, Sequelize, ModelAttributeColumnOptions, QueryTypes } from 'sequelize';
+import { runMigrations, revertMigrations, repairMigration, dryRunMigrations, DowngradeTarget, MigrationFiles } from './runner';
 import fs from 'fs/promises';
 import path from 'path';
 import moment from 'moment';
-import { MigrationFile } from './typings/migration';
 import {
     DatabaseColumn,
     ModelDataType,
@@ -14,133 +14,6 @@ import {
     databaseTypeToCode,
     databaseDefaultToCode,
 } from './column-types';
-
-interface MigrationFiles {
-    [version: string]: { migration: MigrationFile; };
-}
-
-/**
- * Versions used to be saved with the file extension when migrations ran from compiled .js files
- * (e.g. `20240101000000-foo.js`), so they're compared without it.
- */
-function stripExtension(version: string) {
-    return version.replace(/\.[cm]?[jt]s$/, '');
-}
-
-async function readVersion(sequelize: Sequelize) {
-    const tables = await sequelize.getQueryInterface().showAllTables();
-    if (!tables.includes('gina_version')) {
-        return '';
-    }
-
-    const versions: { version: string; }[] = await sequelize.query('SELECT version FROM gina_version;', {
-        type: QueryTypes.SELECT,
-    });
-
-    if (versions.length > 1) {
-        throw new Error('There must be only one version on `gina_version` table.');
-    }
-
-    return versions.length == 1 ? stripExtension(versions[0].version) : '';
-}
-
-async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles, updateAtFieldName: string | undefined) {
-    let version = await readVersion(sequelize);
-
-    console.info('current version:', version);
-
-    if (!updateAtFieldName) {
-        updateAtFieldName = 'updatedAt';
-    }
-
-    for (const migrationFile of Object.keys(migrationFiles).sort()) {
-        if (stripExtension(migrationFile) > version) {
-            console.info('applying migration:', migrationFile);
-            await migrationFiles[migrationFile].migration.up(sequelize.getQueryInterface());
-            if (version) {
-                version = stripExtension(migrationFile);
-                await sequelize.query(`UPDATE gina_version SET version = '${version}', ${updateAtFieldName} = NOW();`);
-            } else {
-                version = stripExtension(migrationFile);
-                await sequelize.query(`INSERT INTO gina_version (${updateAtFieldName}, version) VALUES (NOW(),'${version}');`);
-            }
-            console.info('applied version:', migrationFile);
-        }
-    }
-}
-
-interface DowngradeTarget {
-    /** how many migrations to revert */
-    steps?: number;
-    /** migration to go back to (it stays applied): its full name or a unique prefix, like its timestamp */
-    to?: string;
-}
-
-/**
- * Reverts applied migrations, newest first, running their `down` functions.
- * The first migration is never reverted: it creates the `gina_version` table that holds the version.
- */
-async function revertMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles, target: DowngradeTarget, updateAtFieldName = 'updatedAt') {
-    const version = await readVersion(sequelize);
-    console.info('current version:', version);
-
-    const names = Object.keys(migrationFiles).sort();
-    const versions = names.map(stripExtension);
-    const current = versions.indexOf(version);
-
-    if (!version) {
-        throw new Error('There are no applied migrations to downgrade.');
-    }
-    if (current === -1) {
-        throw new Error(`The current version ${version} doesn't match any migration file.`);
-    }
-
-    let targetIndex: number;
-    if (target.to !== undefined) {
-        const to = stripExtension(target.to);
-        const matches = versions.filter(name => name === to || name.startsWith(to));
-        const exact = versions.indexOf(to);
-        if (exact === -1 && matches.length !== 1) {
-            throw new Error(matches.length
-                ? `"${target.to}" matches more than one migration: ${matches.join(', ')}.`
-                : `There's no migration named "${target.to}".`);
-        }
-        targetIndex = exact !== -1 ? exact : versions.indexOf(matches[0]);
-        if (targetIndex > current) {
-            throw new Error(`${versions[targetIndex]} isn't applied yet (current version is ${version}). Use upgrade instead.`);
-        }
-    } else {
-        const steps = target.steps ?? 1;
-        if (!Number.isInteger(steps) || steps < 1) {
-            throw new Error('The number of migrations to downgrade must be a positive integer.');
-        }
-        targetIndex = current - steps;
-    }
-
-    if (targetIndex < 0) {
-        throw new Error(`Can't downgrade ${current - targetIndex} migration(s): only ${current} can be reverted, `
-            + `the first one (${versions[0]}) creates the gina_version table.`);
-    }
-
-    const toRevert = names.slice(targetIndex + 1, current + 1).reverse();
-    if (!toRevert.length) {
-        console.info('Nothing to downgrade.');
-        return;
-    }
-
-    const withoutDown = toRevert.filter(name => typeof migrationFiles[name].migration.down !== 'function');
-    if (withoutDown.length) {
-        throw new Error(`These migrations don't have a down function: ${withoutDown.join(', ')}.`);
-    }
-
-    for (const name of toRevert) {
-        const previous = versions[names.indexOf(name) - 1];
-        console.info('reverting migration:', name);
-        await migrationFiles[name].migration.down(sequelize.getQueryInterface());
-        await sequelize.query(`UPDATE gina_version SET version = ?, ${updateAtFieldName} = NOW();`, { replacements: [previous] });
-        console.info('current version:', previous);
-    }
-}
 
 /**
  * Index fields can be plain column names or objects like `{ name: 'time', order: 'DESC' }`.
@@ -651,9 +524,9 @@ class Migration {
         }
     }
 
-    async generateFile(migrationName: string, migrationsDir: string) {
+    async generateFile(migrationName: string, migrationsDir: string, previous?: string) {
         const migration = `import { ${this.imports.join(', ')} } from 'sequelize';
-
+${previous ? `\n// runs after this migration (see "Migration order" on gina's README)\nexport const previous = ${quote(previous)};\n` : ''}
 export const migration = {
     async up(queryInterface: QueryInterface) {
 ${this.upTables}
@@ -674,10 +547,17 @@ ${this.downTables}
         const fileName = `${moment().format('YYYYMMDDHHmmss')}-${migrationName.toLowerCase().replaceAll(' ', '-')}.ts`;
         await fs.writeFile(path.join(migrationsDir, fileName), migration);
         console.info('migration created:', path.join(migrationsDir, fileName));
+        return fileName;
     }
 }
 
-async function createMigration(sequelize: Sequelize, migrationName: string, migrationsDir = './gina/migrations') {
+/**
+ * Writes a migration with the differences between the models and the database.
+ * Returns its file name, or `undefined` when there are no differences.
+ *
+ * @param previous the last migration, which the new one runs after
+ */
+async function createMigration(sequelize: Sequelize, migrationName: string, migrationsDir = './gina/migrations', previous?: string) {
 
     const migration = new Migration(sequelize);
     await migration.loadDatabaseTables();
@@ -686,17 +566,19 @@ async function createMigration(sequelize: Sequelize, migrationName: string, migr
 
     if (!migration.upTables && !migration.upFields && !migration.upIndexes && !migration.upForeignKey) {
         console.info('There\'s no changes between your models and the database.');
-        return;
+        return undefined;
     }
-    await migration.generateFile(migrationName, migrationsDir);
+    return migration.generateFile(migrationName, migrationsDir, previous);
 
 }
 
 const gina = {
     runMigrations,
     revertMigrations,
+    repairMigration,
+    dryRunMigrations,
     createMigration,
 };
 
-export { runMigrations, revertMigrations, createMigration, DowngradeTarget };
+export { runMigrations, revertMigrations, repairMigration, dryRunMigrations, createMigration, DowngradeTarget, MigrationFiles };
 export default gina;
