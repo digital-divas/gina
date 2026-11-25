@@ -27,22 +27,25 @@ function stripExtension(version: string) {
     return version.replace(/\.[cm]?[jt]s$/, '');
 }
 
-async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles, updateAtFieldName: string | undefined) {
+async function readVersion(sequelize: Sequelize) {
     const tables = await sequelize.getQueryInterface().showAllTables();
-
-    let version = '';
-
-    if (tables.includes('gina_version')) {
-        const versions: { version: string; }[] = await sequelize.query('SELECT version FROM gina_version;', {
-            type: QueryTypes.SELECT,
-        });
-
-        if (versions.length > 1) {
-            throw new Error('There must be only one version on `gina_version` table.');
-        }
-
-        version = versions.length == 1 ? stripExtension(versions[0].version) : '';
+    if (!tables.includes('gina_version')) {
+        return '';
     }
+
+    const versions: { version: string; }[] = await sequelize.query('SELECT version FROM gina_version;', {
+        type: QueryTypes.SELECT,
+    });
+
+    if (versions.length > 1) {
+        throw new Error('There must be only one version on `gina_version` table.');
+    }
+
+    return versions.length == 1 ? stripExtension(versions[0].version) : '';
+}
+
+async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles, updateAtFieldName: string | undefined) {
+    let version = await readVersion(sequelize);
 
     console.info('current version:', version);
 
@@ -63,6 +66,79 @@ async function runMigrations(sequelize: Sequelize, migrationFiles: MigrationFile
             }
             console.info('applied version:', migrationFile);
         }
+    }
+}
+
+interface DowngradeTarget {
+    /** how many migrations to revert */
+    steps?: number;
+    /** migration to go back to (it stays applied): its full name or a unique prefix, like its timestamp */
+    to?: string;
+}
+
+/**
+ * Reverts applied migrations, newest first, running their `down` functions.
+ * The first migration is never reverted: it creates the `gina_version` table that holds the version.
+ */
+async function revertMigrations(sequelize: Sequelize, migrationFiles: MigrationFiles, target: DowngradeTarget, updateAtFieldName = 'updatedAt') {
+    const version = await readVersion(sequelize);
+    console.info('current version:', version);
+
+    const names = Object.keys(migrationFiles).sort();
+    const versions = names.map(stripExtension);
+    const current = versions.indexOf(version);
+
+    if (!version) {
+        throw new Error('There are no applied migrations to downgrade.');
+    }
+    if (current === -1) {
+        throw new Error(`The current version ${version} doesn't match any migration file.`);
+    }
+
+    let targetIndex: number;
+    if (target.to !== undefined) {
+        const to = stripExtension(target.to);
+        const matches = versions.filter(name => name === to || name.startsWith(to));
+        const exact = versions.indexOf(to);
+        if (exact === -1 && matches.length !== 1) {
+            throw new Error(matches.length
+                ? `"${target.to}" matches more than one migration: ${matches.join(', ')}.`
+                : `There's no migration named "${target.to}".`);
+        }
+        targetIndex = exact !== -1 ? exact : versions.indexOf(matches[0]);
+        if (targetIndex > current) {
+            throw new Error(`${versions[targetIndex]} isn't applied yet (current version is ${version}). Use upgrade instead.`);
+        }
+    } else {
+        const steps = target.steps ?? 1;
+        if (!Number.isInteger(steps) || steps < 1) {
+            throw new Error('The number of migrations to downgrade must be a positive integer.');
+        }
+        targetIndex = current - steps;
+    }
+
+    if (targetIndex < 0) {
+        throw new Error(`Can't downgrade ${current - targetIndex} migration(s): only ${current} can be reverted, `
+            + `the first one (${versions[0]}) creates the gina_version table.`);
+    }
+
+    const toRevert = names.slice(targetIndex + 1, current + 1).reverse();
+    if (!toRevert.length) {
+        console.info('Nothing to downgrade.');
+        return;
+    }
+
+    const withoutDown = toRevert.filter(name => typeof migrationFiles[name].migration.down !== 'function');
+    if (withoutDown.length) {
+        throw new Error(`These migrations don't have a down function: ${withoutDown.join(', ')}.`);
+    }
+
+    for (const name of toRevert) {
+        const previous = versions[names.indexOf(name) - 1];
+        console.info('reverting migration:', name);
+        await migrationFiles[name].migration.down(sequelize.getQueryInterface());
+        await sequelize.query(`UPDATE gina_version SET version = ?, ${updateAtFieldName} = NOW();`, { replacements: [previous] });
+        console.info('current version:', previous);
     }
 }
 
@@ -120,21 +196,27 @@ class Migration {
     downTables: string;
     upFields: string;
     downFields: string;
+    /** columns dropped on up, added back on down in table order so each one can go after the previous */
+    downDroppedFields: string;
     upIndexes: string;
     downIndexes: string;
     private sequelize: Sequelize;
     tables: string[];
     imports: string[];
     upForeignKey: string;
+    /** foreign keys added on up are removed first on down, before their tables or columns */
+    downForeignKey: string;
 
     constructor(sequelize: Sequelize) {
         this.upTables = '';
         this.downTables = '';
         this.upFields = '';
         this.downFields = '';
+        this.downDroppedFields = '';
         this.upIndexes = '';
         this.downIndexes = '';
         this.upForeignKey = '';
+        this.downForeignKey = '';
 
         /**
          *
@@ -222,18 +304,7 @@ class Migration {
             if (modelAttrs[modelAttrsKey].references) {
                 const references = modelAttrs[modelAttrsKey].references;
                 if (typeof references !== 'string') {
-                    this.upForeignKey += `
-        await queryInterface.addConstraint('${model.getTableName()}', {
-            type: 'foreign key',
-            fields: ['${modelAttrs[modelAttrsKey].field}'],
-            onDelete: '${modelAttrs[modelAttrsKey].onDelete}',
-            onUpdate: '${modelAttrs[modelAttrsKey].onUpdate}',
-            references: {
-                table: '${references?.model}',
-                field: '${references?.key}'
-            }
-        });
-`;
+                    this.foreignKey(model.getTableName() as string, modelAttrs[modelAttrsKey].field as string, references, modelAttrs[modelAttrsKey]);
                 }
 
             }
@@ -253,9 +324,8 @@ class Migration {
             unique: ${modelIndex.unique},
         });
 `;
-                this.downIndexes = `
-        await queryInterface.removeIndex('${model.getTableName()}', '${modelIndex.name}');
-` + this.downIndexes;
+                // no removeIndex on down: dropTable removes the table's indexes, and MySQL
+                // refuses to remove an index a foreign key needs
             }
         }
         this.upTables += tabsToSpace(`\t\t});`);
@@ -340,10 +410,46 @@ class Migration {
         return attrProps;
     }
 
-    dropColumn(tableName: string, field: string, column: DatabaseColumn) {
+    /**
+     * The constraint gets an explicit name (the one Sequelize would pick) so down can remove it.
+     */
+    foreignKey(tableName: string, field: string, references: { model?: unknown; key?: string; }, attribute: { onDelete?: string; onUpdate?: string; }) {
+        const name = `${tableName}_${field}_${references.model}_fk`;
+        this.upForeignKey += `
+        await queryInterface.addConstraint('${tableName}', {
+            type: 'foreign key',
+            name: '${name}',
+            fields: ['${field}'],
+            onDelete: '${attribute.onDelete}',
+            onUpdate: '${attribute.onUpdate}',
+            references: {
+                table: '${references.model}',
+                field: '${references.key}'
+            }
+        });
+`;
+        this.downForeignKey = `
+        await queryInterface.removeConstraint('${tableName}', '${name}');
+` + this.downForeignKey;
+    }
+
+    /**
+     * @param after the column before it in the table, so down adds it back at the same position (MySQL/MariaDB)
+     */
+    dropColumn(tableName: string, field: string, column: DatabaseColumn, after: string | undefined) {
         console.debug(`drop column ${tableName} ${field} `);
+        let position = '';
+        let cast = '';
+        if (this.supportsColumnChanges) {
+            // after/first work on MySQL but are missing from Sequelize's types
+            position = tabsToSpace(after ? `\n\t\t\tafter: ${quote(after)},` : '\n\t\t\tfirst: true,');
+            cast = ' as ModelAttributeColumnOptions';
+            if (!this.imports.includes('ModelAttributeColumnOptions')) {
+                this.imports.push('ModelAttributeColumnOptions');
+            }
+        }
         this.upFields += tabsToSpace(`\n\t\tawait queryInterface.removeColumn('${tableName}', '${field}');\n`);
-        this.downFields = tabsToSpace(`\n\t\tawait queryInterface.addColumn('${tableName}', '${field}', {${this.columnAttributeProps(column, 3)}\n\t\t});\n`) + this.downFields;
+        this.downDroppedFields += tabsToSpace(`\n\t\tawait queryInterface.addColumn('${tableName}', '${field}', {${this.columnAttributeProps(column, 3)}${position}\n\t\t}${cast});\n`);
     }
 
     /**
@@ -467,19 +573,7 @@ class Migration {
                     if (modelAttrs[modelAttr].references) {
                         const references = modelAttrs[modelAttr].references;
                         if (typeof references !== 'string') {
-
-                            this.upForeignKey += `
-        await queryInterface.addConstraint('${modelTable}', {
-            type: 'foreign key',
-            fields: ['${modelAttrs[modelAttr].field}'],
-            onDelete: '${modelAttrs[modelAttr].onDelete}',
-            onUpdate: '${modelAttrs[modelAttr].onUpdate}',
-            references: {
-                table: '${references?.model}',
-                field: '${references?.key}'
-            }
-        });
-`;
+                            this.foreignKey(modelTable, modelAttrs[modelAttr].field as string, references, modelAttrs[modelAttr]);
                         }
 
                     }
@@ -487,11 +581,12 @@ class Migration {
             }
 
             // drop column
-            for (const attr of Object.keys(attrs)) {
+            const columnNames = Object.keys(attrs);
+            columnNames.forEach((attr, index) => {
                 if (!modelFields.includes(attr)) {
-                    this.dropColumn(modelTable, attr, attrs[attr]);
+                    this.dropColumn(modelTable, attr, attrs[attr], columnNames[index - 1]);
                 }
-            }
+            });
 
 
             const indexes: { name: string; fields: { attribute: string; }[]; unique: boolean; }[] = await queryInterface.showIndex(modelTable) as { name: string; fields: { attribute: string; }[]; unique: boolean; }[];
@@ -568,8 +663,10 @@ ${this.upIndexes}
     },
 
     async down(queryInterface: QueryInterface) {
+${this.downForeignKey}
 ${this.downIndexes}
 ${this.downFields}
+${this.downDroppedFields}
 ${this.downTables}
     }
 };`;
@@ -597,8 +694,9 @@ async function createMigration(sequelize: Sequelize, migrationName: string, migr
 
 const gina = {
     runMigrations,
+    revertMigrations,
     createMigration,
 };
 
-export { runMigrations, createMigration };
+export { runMigrations, revertMigrations, createMigration, DowngradeTarget };
 export default gina;

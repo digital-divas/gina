@@ -67,6 +67,9 @@ function registerTypeScript(cwd: string) {
         inlineSources: true,
         sourceMap: false,
         sourceRoot: undefined,
+        // with outDir, sources are written relative to it and stack traces point to the wrong folder
+        outDir: undefined,
+        mapRoot: undefined,
         declaration: false,
         noEmit: false,
     };

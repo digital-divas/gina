@@ -4,7 +4,7 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import moment from 'moment';
 import type { Options, Sequelize } from 'sequelize';
-import gina from './gina';
+import gina, { DowngradeTarget } from './gina';
 import { listScripts, loadModule, requireFromProject } from './loader';
 import { MigrationFile } from './typings/migration';
 
@@ -191,6 +191,18 @@ async function upgrade(cwd: string) {
     }
 }
 
+async function downgrade(cwd: string, target: DowngradeTarget) {
+    const config = await readConfig(cwd);
+    const sequelize = await initializeModels(cwd, config);
+    try {
+        console.info('loading migrations...');
+        const migrations = await loadMigrations(cwd, config);
+        await gina.revertMigrations(sequelize, migrations, target);
+    } finally {
+        await sequelize.close();
+    }
+}
+
 async function run(command: (cwd: string) => Promise<void>) {
     try {
         await command(process.cwd());
@@ -213,6 +225,21 @@ yargs(hideBin(process.argv))
             });
     }, (argv) => run(cwd => generateMigration(cwd, argv['migration-name'])))
     .command('upgrade', 'upgrade database to its last revision', () => undefined, () => run(upgrade))
+    .command('downgrade [steps]', 'reverts the last migration, the last N migrations or every migration after --to', (yargs) => {
+        return yargs
+            .positional('steps', {
+                describe: 'How many migrations to revert',
+                type: 'number',
+            })
+            .option('to', {
+                describe: 'Migration to go back to, which stays applied (full name or a unique prefix, like its timestamp)',
+                type: 'string',
+            })
+            .conflicts('steps', 'to')
+            .example('$0 downgrade', 'reverts the last migration')
+            .example('$0 downgrade 3', 'reverts the last 3 migrations')
+            .example('$0 downgrade --to 20240531183010', 'reverts every migration after 20240531183010-*');
+    }, (argv) => run(cwd => downgrade(cwd, { steps: argv.steps, to: argv.to })))
     .demandCommand(1)
     .strict()
     .help()

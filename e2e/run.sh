@@ -28,16 +28,18 @@ cleanup() {
 trap cleanup EXIT
 
 migration_count() { find "$PROJECT_DIR/gina/migrations" -name '*.ts' | wc -l | tr -d ' '; }
-last_migration() { find "$PROJECT_DIR/gina/migrations" -name '*.ts' -exec basename {} .ts \; | sort | tail -1; }
+migrations() { find "$PROJECT_DIR/gina/migrations" -name '*.ts' -exec basename {} .ts \; | sort; }
+last_migration() { migrations | tail -1; }
+nth_migration() { migrations | sed -n "$1p"; }
 
 assert_migration_count() {
     [ "$(migration_count)" = "$1" ] || fail "expected $1 migration files, found $(migration_count)"
 }
 
 assert_version() {
-    local version
+    local version expected="${1:-$(last_migration)}"
     version="$(db version)"
-    [ "$version" = "$(last_migration)" ] || fail "gina_version is '$version', expected '$(last_migration)'"
+    [ "$version" = "$expected" ] || fail "gina_version is '$version', expected '$expected'"
 }
 
 assert_schema() {
@@ -94,6 +96,33 @@ assert_migration_count 3
 cat "$PROJECT_DIR"/gina/migrations/*-second-version.ts
 
 step "upgrade with the new migration"
+npm run --silent db:upgrade
+assert_version
+assert_schema v2
+
+step "downgrade reverts the last migration"
+npx gina-cli downgrade
+assert_version "$(nth_migration 2)"
+assert_schema v1
+
+step "downgrade 2 from v2 goes back to the version table only"
+npm run --silent db:upgrade
+npx gina-cli downgrade 2
+assert_version "$(nth_migration 1)"
+assert_schema base
+
+step "downgrade can't revert the first migration, and changes nothing when refused"
+npm run --silent db:upgrade
+if npx gina-cli downgrade 3; then
+    fail "downgrade 3 should have failed"
+fi
+assert_version
+assert_schema v2
+
+step "downgrade --to a migration (by timestamp prefix) keeps it applied"
+npx gina-cli downgrade --to "$(nth_migration 2 | cut -d- -f1)"
+assert_version "$(nth_migration 2)"
+assert_schema v1
 npm run --silent db:upgrade
 assert_version
 assert_schema v2

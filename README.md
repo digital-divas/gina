@@ -4,6 +4,7 @@ Gina is a migration tool for [Sequelize](https://sequelize.org/) projects, in th
 
 - **`generate-migration`** compares your Sequelize models with a live database and writes a migration file with the differences.
 - **`upgrade`** applies every pending migration, in order, and records the current version in the database.
+- **`downgrade`** reverts applied migrations, newest first, running their `down` functions.
 
 It's a regular CLI. You install it in your project and run it from the project folder, locally while developing and in production as a deploy step. It works with migrations and models written in TypeScript or in plain/compiled JavaScript, on any Node version from 18 up.
 
@@ -148,6 +149,20 @@ Creates `gina/migrations` with the first migration, which creates the `gina_vers
 
 Applies every pending migration in order, updating `gina_version` after each one. Run it on deploy, before the new version of the app starts.
 
+### `gina-cli downgrade [steps] [--to <migration>]`
+
+Reverts applied migrations, newest first, running each one's `down` and updating `gina_version` after each one.
+
+```bash
+npx gina-cli downgrade                       # reverts the last migration
+npx gina-cli downgrade 3                     # reverts the last 3 migrations
+npx gina-cli downgrade --to 20240531183010   # reverts every migration after 20240531183010-*
+```
+
+`--to` takes the migration to go back to, which stays applied. It can be the full name or any prefix that matches only one migration, like its timestamp.
+
+The first migration (the one `init` creates) is never reverted, because it creates the `gina_version` table. Gina checks the whole request before reverting anything: if you ask for more migrations than can be reverted, or one of them has no `down`, nothing runs.
+
 ### `gina-cli generate-migration "<name>"`
 
 Loads your models, compares them with the database the environment variables point to, and writes `<migrationsDir>/<timestamp>-<name>.ts`. If there are no differences, no file is written.
@@ -165,6 +180,8 @@ It detects:
 Column types are written with their parameters, e.g. `DataTypes.ENUM('draft', 'published')`, `DataTypes.STRING(100)` or `DataTypes.DECIMAL(10, 2)`. Enum values are written into the migration instead of importing the enum from your code, so the migration keeps working after the enum changes again.
 
 Remember that Sequelize considers a column nullable unless the attribute says `allowNull: false`. That includes attributes created by associations (`foreignKey: 'userId'`) and shorthand timestamps (`createdAt: DataTypes.DATE`). If the database has them as `NOT NULL`, Gina reports the difference. Declare `allowNull: false` in the model (for associations, `foreignKey: { name: 'userId', allowNull: false }`) if that's what you want.
+
+The generated `down` undoes the `up`, so `downgrade` brings the schema back to what it was: foreign keys added by the migration are removed first, and dropped columns are added back at their original position (MySQL/MariaDB).
 
 **Always review the generated file.** Gina doesn't detect renames (they show up as a drop plus an add), changes to foreign keys, primary keys or auto increment of existing columns. Write those parts by hand.
 
@@ -194,7 +211,8 @@ npm run eslint
 2. `generate-migration` and `upgrade` with the initial models, then compares the schema with `e2e/expected/v1.json`
 3. `generate-migration` again, which must not create a file
 4. a model change (`e2e/changes`), then `generate-migration` and `upgrade`, then compares the schema with `e2e/expected/v2.json`
-5. `upgrade` from the compiled `.js` only (production-like) on a new database, then compares the schema with `e2e/expected/v2.json`
+5. `downgrade`, `downgrade 2` and `downgrade --to`, comparing the schema after each one (`v1.json`, and `base.json` for only the version table), and checking that a `downgrade` beyond the first migration is refused without changing anything
+6. `upgrade` from the compiled `.js` only (production-like) on a new database, then compares the schema with `e2e/expected/v2.json`
 
 It needs a MySQL server:
 
