@@ -1,0 +1,19 @@
+{
+  "name": "gina-e2e-fixture",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "db:upgrade": "gina-cli upgrade",
+    "db:migration": "gina-cli generate-migration"
+  },
+  "dependencies": {
+    "mysql2": "^3.6.0",
+    "sequelize": "^6.37.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "gina": {
+    "modelsDir": "src/models"
+  }
+}
