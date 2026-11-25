@@ -1,5 +1,6 @@
 # Publishes the package to npm when a release is created, but only after the
 # end-to-end suite passes on every Node version (see e2e.yml).
+# Authenticates through npm trusted publishing (OIDC), so no npm token is stored here.
 
 name: Node.js Package
 
@@ -14,14 +15,17 @@ jobs:
   publish-npm:
     needs: e2e
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org/
       - run: npm ci
       - run: npm run build
+      # trusted publishing needs npm >= 11.5.1
+      - run: npm install -g npm@latest
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}

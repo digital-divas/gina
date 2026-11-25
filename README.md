@@ -210,3 +210,5 @@ Connection settings come from `DB_HOST`, `DB_PORT`, `DB_USERNAME` and `DB_PASSWO
 `.github/workflows/e2e.yml` runs lint and the end-to-end suite against MySQL 8.0 on Node 18, 20.10.0, 20, 22 and 24, in parallel, on every push and pull request.
 
 Publishing to npm (`.github/workflows/npm-publish.yml`, triggered by creating a GitHub release) runs the same suite first. If it fails on any Node version, the package isn't published.
+
+The publish job authenticates with npm through [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), configured on the package settings at npmjs.com for `digital-divas/gina` and `npm-publish.yml`. No npm token is stored in the repository. To release, bump `version` in `package.json`, merge, and create a GitHub release for that version.
