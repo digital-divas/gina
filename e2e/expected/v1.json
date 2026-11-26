@@ -25,10 +25,18 @@
       "status": "enum('draft','published') NOT NULL DEFAULT draft",
       "rating": "decimal(3,1) NULL",
       "published_at": "datetime NULL",
+      "body": "mediumtext NOT NULL",
+      "slug": "varchar(100) NULL UNI",
       "created_at": "datetime NULL",
       "updated_at": "datetime NULL"
     },
     "indexes": {
+      "posts_slug_unique": {
+        "unique": true,
+        "columns": [
+          "slug"
+        ]
+      },
       "posts_user_published": {
         "unique": false,
         "columns": [

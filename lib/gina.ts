@@ -50,6 +50,59 @@ function isNullable(attribute: { allowNull?: boolean; primaryKey?: boolean; }) {
     return attribute.allowNull !== false && !attribute.primaryKey;
 }
 
+interface ModelIndex {
+    name?: string;
+    fields?: unknown[];
+    unique?: boolean;
+    /** declared with `unique` on the attribute: matched by its columns, since the index name is up to the database */
+    fromAttribute?: boolean;
+}
+
+/**
+ * The model's indexes: `options.indexes` plus the unique indexes declared on attributes
+ * (`unique: true`, or `unique: 'name'` shared by the attributes of a composite index).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function modelIndexesOf(model: ModelCtor<Model<any, any>>, tableName: string): ModelIndex[] {
+    const indexes: ModelIndex[] = [...(model.options.indexes ?? []) as ModelIndex[]];
+    const composite = new Map<string, string[]>();
+
+    for (const attribute of Object.values(model.getAttributes())) {
+        const unique = (attribute as { unique?: boolean | string | { name?: string; }; }).unique;
+        const field = attribute.field as string;
+        if (!unique || isVirtual(attribute)) {
+            continue;
+        }
+        const name = typeof unique === 'string' ? unique : typeof unique === 'object' ? unique.name : undefined;
+        if (name) {
+            composite.set(name, [...composite.get(name) ?? [], field]);
+        } else {
+            indexes.push({ name: `${tableName}_${field}_unique`, fields: [field], unique: true, fromAttribute: true });
+        }
+    }
+    for (const [name, fields] of composite) {
+        indexes.push({ name, fields, unique: true, fromAttribute: true });
+    }
+
+    return indexes;
+}
+
+function indexColumns(fields: unknown[] | undefined) {
+    return (fields ?? []).map(field => (typeof field === 'string' ? field : (field as { name?: string; attribute?: string; }).name ?? (field as { attribute: string; }).attribute));
+}
+
+/** Whether a database index is the one the model declares: by name, or by its columns for attribute-level unique indexes. */
+function sameIndex(modelIndex: ModelIndex, index: { name: string; fields?: { attribute: string; }[]; unique: boolean; }) {
+    if (modelIndex.name === index.name) {
+        return true;
+    }
+    return Boolean(modelIndex.fromAttribute && index.unique
+        && indexColumns(modelIndex.fields).join(',') === indexColumns(index.fields).join(','));
+}
+
+/** MySQL can't store a default value for these types (and Sequelize drops the plain TEXT one): the model's default only applies on create. */
+const TYPES_WITHOUT_DEFAULT = ['TEXT', 'BLOB', 'JSON', 'GEOMETRY'];
+
 function tabsToSpace(str: string) {
     return str.replaceAll('\t', '    ');
 }
@@ -186,9 +239,9 @@ class Migration {
 
         }
 
-        const modelIndexes = model.options.indexes;
+        const modelIndexes = modelIndexesOf(model, model.getTableName() as string);
 
-        if (modelIndexes) {
+        if (modelIndexes.length) {
             for (const modelIndex of modelIndexes) {
                 this.upIndexes += `
         await queryInterface.addIndex('${model.getTableName()}', {
@@ -226,7 +279,7 @@ class Migration {
         if (attribute.primaryKey !== undefined) {
             attrProps += tabsToSpace(`\n${tabs(tabsQty)}primaryKey: ${this.getPrimaryKey(attribute)},`);
         }
-        if (modelDefaultToSql(attribute.defaultValue) !== undefined && attribute.defaultValue !== undefined) {
+        if (this.hasDatabaseDefault(attribute)) {
             attrProps += tabsToSpace(`\n${tabs(tabsQty)}defaultValue: ${this.getDefaultValue(attribute)},`);
         }
 
@@ -277,7 +330,7 @@ class Migration {
             attrProps += tabsToSpace(`\n${tabs(tabsQty)}autoIncrement: true,`);
         }
         attrProps += tabsToSpace(`\n${tabs(tabsQty)}allowNull: ${isNullable(attribute)},`);
-        if (attribute.defaultValue !== undefined && modelDefaultToSql(attribute.defaultValue) !== undefined) {
+        if (this.hasDatabaseDefault(attribute)) {
             attrProps += tabsToSpace(`\n${tabs(tabsQty)}defaultValue: ${this.getDefaultValue(attribute)},`);
         }
         return attrProps;
@@ -343,7 +396,7 @@ class Migration {
         }
 
         const modelDefault = modelDefaultToSql(attribute.defaultValue);
-        if (modelDefault !== undefined && !sameDefault(modelDefault, column.defaultValue)) {
+        if (this.hasDatabaseDefault(attribute) && modelDefault !== undefined && !sameDefault(modelDefault, column.defaultValue)) {
             changes.push(`default ${column.defaultValue} -> ${modelDefault}`);
         }
 
@@ -355,6 +408,18 @@ class Migration {
         console.debug(`change column ${tableName} ${attribute.field}: ${changes.join(', ')}`);
         this.upFields += tabsToSpace(`\n\t\tawait queryInterface.changeColumn('${tableName}', '${attribute.field}', {${this.changedAttributeProps(attribute, 3)}\n\t\t});\n`);
         this.downFields = tabsToSpace(`\n\t\tawait queryInterface.changeColumn('${tableName}', '${attribute.field}', {${this.columnAttributeProps(column, 3)}\n\t\t});\n`) + this.downFields;
+    }
+
+    /**
+     * Whether the attribute's default can be stored by the database. Defaults of functions (e.g. NOW)
+     * and, on MySQL/MariaDB, of TEXT, BLOB, JSON and GEOMETRY columns only apply when Sequelize creates a row.
+     */
+    hasDatabaseDefault(attribute: { type?: unknown; defaultValue?: unknown; }) {
+        if (attribute.defaultValue === undefined || modelDefaultToSql(attribute.defaultValue) === undefined) {
+            return false;
+        }
+        const key = (attribute.type as ModelDataType | undefined)?.key;
+        return !(this.supportsColumnChanges && key !== undefined && TYPES_WITHOUT_DEFAULT.includes(key));
     }
 
     get supportsColumnChanges() {
@@ -463,11 +528,11 @@ class Migration {
 
 
             const indexes: { name: string; fields: { attribute: string; }[]; unique: boolean; }[] = await queryInterface.showIndex(modelTable) as { name: string; fields: { attribute: string; }[]; unique: boolean; }[];
-            const modelIndexes = this.sequelize.models[model].options.indexes;
+            const modelIndexes = modelIndexesOf(this.sequelize.models[model], modelTable);
 
-            if (modelIndexes) {
+            if (modelIndexes.length) {
                 for (const modelIndex of modelIndexes) {
-                    if (!indexes.find((index) => index.name == modelIndex.name)) {
+                    if (!indexes.find((index) => sameIndex(modelIndex, index))) {
                         this.upIndexes += `
         await queryInterface.addIndex('${modelTable}', {
             fields: ${formatIndexFields(modelIndex.fields)},
@@ -499,7 +564,7 @@ class Migration {
                         continue;
                     }
 
-                    if (modelIndexes === undefined || !modelIndexes.find((modelIndex) => index.name == modelIndex.name)) {
+                    if (!modelIndexes.find((modelIndex) => sameIndex(modelIndex, index))) {
                         this.upIndexes += `
         await queryInterface.removeIndex('${modelTable}', '${index.name}');
 
@@ -545,10 +610,22 @@ ${this.downTables}
 };`;
 
         const fileName = `${moment().format('YYYYMMDDHHmmss')}-${migrationName.toLowerCase().replaceAll(' ', '-')}.ts`;
-        await fs.writeFile(path.join(migrationsDir, fileName), migration);
+        await fs.writeFile(path.join(migrationsDir, fileName), tidy(migration));
         console.info('migration created:', path.join(migrationsDir, fileName));
         return fileName;
     }
+}
+
+/**
+ * The sections of a generated migration are joined with blank lines, and some of them are empty:
+ * no blank lines right after `{` or before `}`, at most one in a row, and a newline at the end.
+ */
+function tidy(code: string) {
+    return `${code
+        .replace(/\{\n(?:[ \t]*\n)+/g, '{\n')
+        .replace(/\n(?:[ \t]*\n)+([ \t]*\})/g, '\n$1')
+        .replace(/\n(?:[ \t]*\n){2,}/g, '\n\n')
+        .trimEnd()}\n`;
 }
 
 /**

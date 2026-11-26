@@ -237,7 +237,9 @@ It detects:
 - new and removed columns
 - changes to existing columns (MySQL/MariaDB only): type, including length and enum values (e.g. adding a value to an `ENUM`), nullability and default value. These become `changeColumn` calls. `up` uses the model's definition and `down` restores the column as it was in the database.
 - foreign keys of new columns
-- new and removed indexes, including ordered fields like `{ name: 'time', order: 'DESC' }`
+- new and removed indexes, including ordered fields like `{ name: 'time', order: 'DESC' }` and unique indexes declared on the attribute (`unique: true`, or `unique: 'name'` for a composite one). Those are matched by their columns, since the database may have named them differently
+
+On MySQL/MariaDB, defaults of `TEXT`, `BLOB`, `JSON` and `GEOMETRY` columns are left out: MySQL can't store them, so a model default like `defaultValue: ''` only applies when Sequelize creates a row.
 
 Column types are written with their parameters, e.g. `DataTypes.ENUM('draft', 'published')`, `DataTypes.STRING(100)` or `DataTypes.DECIMAL(10, 2)`. Enum values are written into the migration instead of importing the enum from your code, so the migration keeps working after the enum changes again.
 

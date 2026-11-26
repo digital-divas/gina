@@ -15,6 +15,8 @@ export class Post extends Model<InferAttributes<Post>, InferCreationAttributes<P
     declare status: CreationOptional<PostStatus>;
     declare rating: number | null;
     declare publishedAt: Date | null;
+    declare body: CreationOptional<string>;
+    declare slug: string | null;
     declare createdAt: CreationOptional<Date>;
     declare updatedAt: CreationOptional<Date>;
 }
@@ -64,6 +66,20 @@ export function initializeModel(sequelize: Sequelize) {
             type: DataTypes.DATE,
             allowNull: true,
             field: 'published_at'
+        },
+        // MySQL can't store a default for TEXT columns: the default only applies when Sequelize creates a row
+        body: {
+            type: DataTypes.TEXT('medium'),
+            allowNull: false,
+            defaultValue: '',
+            field: 'body'
+        },
+        // unique index declared on the attribute
+        slug: {
+            type: DataTypes.STRING(100),
+            allowNull: true,
+            unique: true,
+            field: 'slug'
         },
         createdAt: {
             type: DataTypes.DATE,
