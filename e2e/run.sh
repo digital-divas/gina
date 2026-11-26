@@ -159,6 +159,21 @@ step "generate-migration after the upgrade must not create a file"
 npx gina-cli generate-migration "nothing changed"
 assert_migration_count 3
 
+step "an attribute-level unique index is matched by its columns, whatever its name"
+node "$E2E_DIR/db.js" query "ALTER TABLE posts RENAME INDEX posts_slug_unique TO posts_slug_custom_name"
+npx gina-cli generate-migration "nothing changed"
+assert_migration_count 3
+node "$E2E_DIR/db.js" query "ALTER TABLE posts RENAME INDEX posts_slug_custom_name TO posts_slug_unique"
+
+step "generated migrations are tidy: no blank lines after { or before }, no double blank lines, newline at the end"
+for file in "$MIGRATIONS_DIR"/*.ts; do
+    node -e '
+        const code = require("fs").readFileSync(process.argv[1], "utf8");
+        const untidy = /\{\n[ \t]*\n|\n[ \t]*\n[ \t]*\}|\n[ \t]*\n[ \t]*\n/.test(code) || !code.endsWith("\n");
+        process.exit(untidy ? 1 : 0);
+    ' "$file" || fail "$(basename "$file") is not tidy"
+done
+
 step "upgrade again is a no-op"
 npm run --silent db:upgrade
 assert_version

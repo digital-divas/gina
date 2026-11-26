@@ -171,7 +171,6 @@ async function init(cwd: string) {
 
 export const migration = {
     async up(queryInterface: QueryInterface) {
-
         await queryInterface.createTable('gina_version', {
             id: {
                 type: DataTypes.INTEGER,
@@ -193,13 +192,10 @@ export const migration = {
                 field: 'updatedAt'
             },
         });
-
     },
 
     async down(queryInterface: QueryInterface) {
-
         await queryInterface.dropTable('gina_version');
-
     }
 };
 `);

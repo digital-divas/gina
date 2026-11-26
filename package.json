@@ -1,6 +1,6 @@
 {
   "name": "gina-sequelize",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Gina is a tool to auto-generate and run migrations based on Sequelize ORM.",
   "main": "./dist/gina.js",
   "types": "./dist/gina.d.ts",
